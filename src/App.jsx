@@ -1,6 +1,9 @@
 
-import React, { useMemo, useEffect, useState } from "react";
+import React, { createContext, useContext, useMemo, useEffect, useState ,useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import {  Link, Routes, Route, useLocation } from "react-router-dom";
+import {TermsPage ,PrivacyPage ,RefundPage} from "./components/Legal";
+
 
 const COLORS = {
   primary: "#07111F",
@@ -16,125 +19,201 @@ const COLORS = {
   textMuted: "#64748B",
 };
 
-const history = [
-  { label: "Purchased Apply Faster Pack", detail: "+5 credits — $19" },
-  { label: "Used credit for Project Coordinator Resume", detail: "-1 credit" },
-  { label: "Used credit for Marketing Assistant Resume", detail: "-1 credit" },
-];
 
-const scoreBreakdown = [
+
+const fakeScoreBreakdown = [
   { label: "Keyword match", value: 55, note: "Missing role-specific ATS keywords" },
   { label: "Experience fit", value: 70, note: "Relevant but not strongly positioned" },
   { label: "ATS readability", value: 60, note: "Needs cleaner structure" },
   { label: "Resume clarity", value: 64, note: "Summary and bullets can be stronger" },
 ];
 
-const afterBreakdown = [
-  { label: "Keyword match", value: 88 },
-  { label: "Experience fit", value: 86 },
-  { label: "ATS readability", value: 91 },
-  { label: "Resume clarity", value: 87 },
-];
+const AuthContext = createContext();
+function AuthProvider({ children }) {
 
-const sampleProblems = [
-  "Your resume summary is too generic for this role.",
-  "Your resume is missing critical ATS keywords from the job description.",
-  "Several bullet points describe tasks but not measurable impact.",
-];
+  const [mode, setMode] = useState("landing");
+  const [user, setUser] = useState(() => {
+    try {
+      const storedUser = localStorage.getItem("connected_user");
+      if (!storedUser || storedUser === "undefined") {
+        return null;
+      }
+      return JSON.parse(storedUser);
+    } catch (error) {
+      console.error("Invalid user data in localStorage:", error);
+      return null;
+    }
+  });
 
-const sampleKeywords = [
-  "project management",
-  "stakeholder communication",
-  "data analysis",
-  "CRM",
-  "process improvement",
-  "cross-functional teams",
-];
+  const [credits, setCredits] = useState({
+    total: 0,
+    used: 0,
+    remaining: 0,
+  });
 
-const pricingPlans = [
-  {
-    name: "Single Resume",
-    price: "$5",
-    subtitle: "1 targeted job application",
-    badge: "Best for testing",
-    features: ["1 optimized resume", "1 cover letter", "Premium PDF", "Before/after comparison"],
-    cta: "Unlock for $5",
-  },
-  {
-    name: "Job Search Pack",
-    price: "$12",
-    subtitle: "3 targeted applications",
-    badge: "Most popular",
-    features: ["3 optimized resumes", "3 cover letters", "Premium PDF exports", "Save $3"],
-    cta: "Get 3 credits",
-  },
-  {
-    name: "Apply Faster Pack",
-    price: "$19",
-    subtitle: "5 targeted applications",
-    badge: "Best value",
-    features: ["5 optimized resumes", "5 cover letters", "Premium PDF exports", "Save $6"],
-    cta: "Get 5 credits",
-  },
-];
+  const handleLogout = async () => {
 
-const originalResume = `SUMMARY
-Motivated professional with experience helping teams and completing tasks. Good communication skills and ability to work with others.
+    try {
 
-EXPERIENCE
-Project Assistant
-- Helped with projects and team activities.
-- Prepared reports and followed up with team members.
-- Supported daily operations.
+      const token = localStorage.getItem("token");
 
-Administrative Assistant
-- Managed documents and communication.
-- Helped customers and supported the office team.`;
+      if (token) {
 
-const optimizedResume = `FULL NAME
-City, State | email@example.com | (555) 000-0000 | LinkedIn
+        await fetch(
+          "https://api.cvmatchai.us/api/v1/auth/logout",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/json",
+            },
+          }
+        );
+      }
 
-PROFESSIONAL SUMMARY
-Results-driven project and operations professional with experience coordinating cross-functional teams, improving internal processes, and supporting data-informed decision-making. Skilled in stakeholder communication, project tracking, CRM tools, reporting, and process improvement. Known for organizing priorities, increasing visibility, and helping teams meet deadlines.
+    } catch (error) {
+      console.error("logout error:", error);
+    }
 
-CORE SKILLS
-Project Management • Stakeholder Communication • Data Analysis • CRM • Process Improvement • Reporting • Team Coordination • Operational Support
+    // CLEAR STORAGE
+    localStorage.removeItem("selected_plan");
+    localStorage.removeItem("redirect");
+    localStorage.removeItem("token");
+    localStorage.removeItem("connected_user");
+    localStorage.removeItem("guest_token");
+    localStorage.removeItem("analysisId");
+    localStorage.removeItem("cvmatch_resume_id");
+    localStorage.removeItem("cvmatch_job_text");
+    localStorage.removeItem("cvmatch_resume_name");
+    localStorage.removeItem("cvmatch_current");
 
-PROFESSIONAL EXPERIENCE
-Project Coordinator
-Company Name — City, State
-Month Year – Present
-• Coordinated project timelines, deliverables, and stakeholder updates across multiple teams to support on-time execution.
-• Improved reporting workflows by organizing recurring performance data, status updates, and operational documentation.
-• Supported process improvement initiatives that reduced manual follow-up and increased visibility for managers.
-• Prepared clear project summaries, meeting notes, and progress reports to improve cross-functional communication.
+    // RESET STATE
+    setUser(null);
 
-Operations Assistant
-Company Name — City, State
-Month Year – Month Year
-• Managed daily administrative and operational tasks with strong attention to detail and deadline accuracy.
-• Maintained accurate records, supported customer communication, and helped internal teams resolve requests efficiently.
-• Assisted with CRM updates, document management, and reporting tasks to improve operational consistency.
+    setCredits({
+      total: 0,
+      used: 0,
+      remaining: 0,
+    });
 
-EDUCATION
-Degree or Certification
-Institution Name — Year`;
+    setMode("landing");
 
-const coverLetter = `Dear Hiring Manager,
+    // REDIRECT
+    window.location.href = "/";
+  };
 
-I am excited to apply for this role. My background in project coordination, stakeholder communication, reporting, and process improvement aligns strongly with your requirements. I have experience supporting cross-functional teams, managing timelines, preparing updates, and helping teams improve operational visibility.
+  const connectWithGoogle = () => {
+    const guestToken = localStorage.getItem("guest_token");
+    const url = guestToken
+      ? `https://api.cvmatchai.us/api/auth/google?guest_token=${guestToken}`
+      : `https://api.cvmatchai.us/api/auth/google`;
+    
+    trackMeta("StartRegistration", { method: "google", location: "site_header_or_landing" }, true);
+    window.location.href = url;
+  };
 
-I am confident that my ability to organize information, communicate clearly, and support data-informed decisions would allow me to contribute quickly to your team.
+  useEffect(() => {
+    if (user) {
 
-Thank you for your time and consideration. I would welcome the opportunity to discuss how my experience can support your goals.
+      localStorage.setItem( "connected_user",  JSON.stringify(user));
 
-Sincerely,
-Candidate`;
+      const total = user?.credits?.total || 0;
+      const used = user?.credits?.used || 0;
+
+      setCredits({
+        total,
+        used,
+        remaining: total - used,
+      });
+    }
+  }, [user]);
+
+  const refreshUserFromGuestToken = async () => {
+    const token = localStorage.getItem("token");
+    const guestToken = localStorage.getItem("guest_token");
+
+    try {
+      const headers = { Accept: "application/json", };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      } else if (guestToken) {
+        headers["X-Guest-Token"] = guestToken;
+      }
+
+      const response = await fetch(
+        "https://api.cvmatchai.us/api/v1/auth/me",
+        {
+          headers,
+        }
+      );
+
+      if ( response.status === 401 ) {
+        if (token)  connectWithGoogle();
+        return;
+      }
+
+      const data = await response.json();
+      const updatedUser = data?.data || null;
+      console.log("updated user from guest token:", updatedUser);
+
+      if (updatedUser) {
+        setUser(updatedUser);
+        localStorage.setItem( "connected_user", JSON.stringify(updatedUser));
+      }
+    } catch (err) {
+      console.error("refreshUserFromGuestToken error:", err);
+      return null;
+    }
+  };
+
+  return (
+    <AuthContext.Provider
+      value={{
+        mode,
+        setMode,
+        user,
+        setUser,
+        credits,
+        connectWithGoogle,
+        handleLogout,
+        refreshUserFromGuestToken,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+function useAuth() {
+  return useContext(AuthContext);
+}
+
+export default function AppWrapper() {
+  return (
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  );
+}
 
 function getScoreColor(score) {
   if (score < 60) return COLORS.danger;
   if (score < 75) return COLORS.warning;
   return COLORS.success;
+}
+
+function trackMeta(eventName, params = {}, isCustom = true) {
+  if (typeof window !== "undefined" && window.fbq) {
+    if (isCustom) {
+      window.fbq("trackCustom", eventName, params);
+    } else {
+      window.fbq("track", eventName, params);
+    }
+  }
+
+  if(typeof window !== "undefined" && window.gtag){
+    window.gtag( "event", eventName, params );
+  }
 }
 
 function Button({ children, onClick, className = "", variant = "solid", disabled = false }) {
@@ -193,7 +272,7 @@ function Logo({ dark = false }) {
       </div>
       <div>
         <div className={`text-xl font-black tracking-tight ${dark ? "text-white" : "text-slate-950"}`}>CVMATCH <span style={{ color: COLORS.teal }}>AI</span></div>
-        <div className={`text-[11px] font-bold tracking-[0.24em] uppercase ${dark ? "text-white/45" : "text-slate-500"}`}>Match your CV. Get hired.</div>
+        <div className={`text-[11px] font-bold tracking-[0.24em] uppercase ${dark ? "text-white/45" : "text-slate-500"}`}>Match your CV. Get hired</div>
       </div>
     </div>
   );
@@ -208,9 +287,9 @@ function PremiumButton({ children, onClick, variant = "primary", className = "",
 
 function go(mode, setMode) {
   const path = mode === "dashboard" ? "/dashboard" : mode === "app" ? "/app" : "/";
-  // window.history.pushState({}, "", path);
   setMode(mode);
 }
+
 
 function Progress({ value, color }) {
   return <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100"><motion.div initial={{ width: 0 }} animate={{ width: `${value}%` }} transition={{ duration: 0.8 }} className="h-full rounded-full" style={{ background: color || getScoreColor(value) }} /></div>;
@@ -222,11 +301,69 @@ function ScoreBar({ label, value, note }) {
 
 function AppStoreButton({ type = "apple", onClick }) {
   return <button onClick={onClick} className="group rounded-2xl bg-slate-950 px-5 py-3 text-white flex items-center gap-3 hover:-translate-y-0.5 hover:bg-slate-800 transition-all shadow-lg"><Icon name={type === "apple" ? "phone" : "globe"} size={22}/><span className="text-left leading-tight"><span className="block text-[10px] uppercase tracking-widest text-white/45">{type === "apple" ? "Download on the" : "Get it on"}</span><span className="block font-black text-sm">{type === "apple" ? "App Store" : "Google Play"}</span></span></button>;
+
 }
 
 function MobileComingSoonModal({ open, onClose }) {
-  if (!open) return null;
-  return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 px-4 backdrop-blur-sm"><motion.div initial={{ opacity: 0, y: 18, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} className="max-w-md rounded-[2rem] bg-white p-7 text-center shadow-2xl"><div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-cyan-50 text-cyan-600"><Icon name="phone" size={30} /></div><h3 className="mt-4 text-3xl font-black">Mobile app coming soon</h3><p className="mt-2 text-slate-600">The mobile app is currently under development. Use the web version for now.</p><div className="mt-5 rounded-3xl bg-slate-50 p-4 text-left"><label className="text-sm font-black">Get notified at launch</label><input placeholder="Email address" className="mt-3 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:ring-4 focus:ring-cyan-100" /></div><Button onClick={onClose} className="mt-5 w-full rounded-2xl bg-slate-950 py-6">Close</Button></motion.div></div>;
+
+
+  const { user} = useAuth();
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const isValidEmail = (value) => {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  };
+
+  const isEmailValid = email && isValidEmail(email);
+
+
+  // if (!open) return null;
+
+  useEffect(() => {
+    if (user?.email) {
+      setEmail(user.email);
+    }
+  }, [user]);
+
+
+  if (!open) return null; 
+
+  const joinWaitlist = async () => {
+
+    setError("");
+    if (!email) { setError("Email required"); return;}
+    if (!isValidEmail(email)) { setError("Invalid email format"); return;}
+
+    setLoading(true);
+    try {
+      const url = "https://api.cvmatchai.us/api/v1/mobile-waitlist";
+      const response = await fetch( url,{
+        method: "POST",
+        body: JSON.stringify({ email }),
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+      });
+
+      const data = await response.json();
+      onClose();
+    } catch (error) {
+      console.error("waitlist error:", error);
+      setError("Something went wrong");
+    } finally {
+      setLoading(false);
+    }
+  };
+ 
+  
+  return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 px-4 backdrop-blur-sm"><motion.div initial={{ opacity: 0, y: 18, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} className="max-w-md rounded-[2rem] bg-white p-7 text-center shadow-2xl"><div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-cyan-50 text-cyan-600"><Icon name="phone" size={30} /></div><h3 className="mt-4 text-3xl font-black">Mobile app coming soon</h3><p className="mt-2 text-slate-600">The mobile app is currently under development. Use the web version for now.</p><div className="mt-5 rounded-3xl bg-slate-50 p-4 text-left"><label className="text-sm font-black">Get notified at launch</label><input placeholder="Email address"
+    value={email}
+    onChange={(e) => setEmail(e.target.value)} className="mt-3 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:ring-4 focus:ring-cyan-100" /></div><Button  onClick={joinWaitlist} disabled={loading || !isEmailValid} className="mt-5 w-full rounded-2xl bg-slate-950 py-6">Close</Button></motion.div></div>;
+
 }
 
 function ReviewPromptModal({ open, onClose }) {
@@ -235,141 +372,236 @@ function ReviewPromptModal({ open, onClose }) {
   return <div className="fixed inset-0 z-[100] bg-slate-950/60 backdrop-blur-sm flex items-center justify-center px-4"><motion.div initial={{ opacity: 0, scale: 0.94, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} className="w-full max-w-md rounded-[2rem] bg-white shadow-2xl p-7 text-center"><div className="h-16 w-16 mx-auto rounded-3xl text-white flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${COLORS.blue}, ${COLORS.teal})` }}><Icon name="star" size={28}/></div><h3 className="text-3xl font-black mt-4">How was your resume result?</h3><p className="text-slate-600 mt-2">Leave a quick rating after downloading. This helps us improve CVMatch AI.</p><div className="flex justify-center gap-2 mt-6">{[1,2,3,4,5].map((star) => <button key={star} onClick={() => setRating(star)} className="h-12 w-12 rounded-2xl flex items-center justify-center border transition-all" style={{ background: rating >= star ? COLORS.gold : "#FFFFFF", color: rating >= star ? COLORS.primary : COLORS.textMuted, borderColor: rating >= star ? COLORS.gold : "#E5E5E5" }}><Icon name="star" size={20}/></button>)}</div><textarea placeholder="Optional feedback..." className="w-full h-24 mt-5 rounded-3xl border border-slate-200 p-4 text-sm outline-none focus:ring-4 focus:ring-cyan-100 resize-none"/><PremiumButton onClick={onClose} className="w-full mt-5">Submit review</PremiumButton><Button onClick={onClose} variant="ghost" className="w-full rounded-2xl mt-2">Maybe later</Button></motion.div></div>;
 }
 
-function Header({ onStart, onHome ,setMode}) {
-  const token = localStorage.getItem("token");
-  const credits = 3 ;
+function Header({ onStart, onHome, credits}) {
+   const {
+    setMode,
+    setUser,
+    user,
+    handleLogout,
+    connectWithGoogle,
+  } = useAuth();
 
+  const token = localStorage.getItem("token");
+  const [open, setOpen] = useState(false);
+
+ 
+ 
   return <header className="sticky top-0 z-50 border-b border-white/70 bg-white/80 backdrop-blur-xl">
   <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4"><button onClick={onHome}><Logo /></button>
   <nav className="hidden items-center gap-8 text-sm font-bold text-slate-500 lg:flex">
-    <a href="#proof" className="hover:text-slate-950">Proof</a><a href="#how" className="hover:text-slate-950">How it works</a><a href="#pricing" className="hover:text-slate-950">Pricing</a><a href="#mobile" className="hover:text-slate-950">Mobile</a>
+    <a onClick={()=>{window.location.replace("/#proof"); setMode("landing"); setTimeout(()=>document.getElementById("proof")?.scrollIntoView({behavior:"smooth"}),500)}} href="#proof"   className="hover:text-slate-950">Proof</a><a onClick={()=>{window.location.replace("/#how");setMode("landing"); setTimeout(()=>document.getElementById("how")?.scrollIntoView({behavior:"smooth"}),500)}} href="#how"   className="hover:text-slate-950">How it works</a><a onClick={()=>{window.location.replace("/#pricing");setMode("landing"); setTimeout(()=>document.getElementById("pricing")?.scrollIntoView({behavior:"smooth"}),500)}} href="#pricing"  className="hover:text-slate-950">Pricing</a><a onClick={()=>{window.location.replace("/#mobile");setMode("landing"); setTimeout(()=>document.getElementById("mobile")?.scrollIntoView({behavior:"smooth"}),500)}}  href="#mobile" className="hover:text-slate-950">Mobile</a>
   </nav>
-  {token ? (<> <button variant="outline" className=" rounded-2xl border border-slate-200 bg-white px-5 py-4 font-black" onClick={() => go("dashboard", setMode)}>Dashboard</button>
-          <button onClick={() => go("dashboard", setMode)} className="rounded-2xl bg-cyan-50 px-4 py-3 text-sm font-black text-cyan-700">{credits} Credits</button>
-    
-    </>) : (
+  {user && !user?.is_guest ? 
+    (<div className="relative">
+        <button onClick={() => setOpen(!open)} className="rounded-2xl border border-slate-200 bg-cyan-50 px-5 py-4 font-black" > {credits?.remaining ?? 0} Credits ▼ </button>
+        {open && (
+          <div className="absolute right-0 mt-2 w-48 rounded-xl border bg-white shadow-lg z-50">
+            <button onClick={() => { go("dashboard", setMode); setOpen(false); }} className="block w-full px-4 py-3 text-left hover:bg-gray-100" > Dashboard </button>
+            <button onClick={() => handleLogout(setMode)} className="block w-full px-4 py-3 text-left text-red-600 hover:bg-gray-100" > Logout </button>
+          </div>
+        )}
+      </div>
+    ) : (
     <button
-      onClick={() => {
-        window.location.href =
-          "http://api.cvmatchai.us/api/auth/google";
-      }}
-      className="rounded-2xl bg-slate-950 px-5 py-3 font-black text-white"
+      onClick={connectWithGoogle}
+      className="rounded-2xl bg-slate-950 font-black text-white px-7 py-4 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0"
     > Continue with Google </button>
    )}
   <div className="hidden md:block">
-
-    {/* <PremiumButton onClick={onStart} className="px-5 py-3">Get free score</PremiumButton> */}
-    <div className="relative">
-      <div className="absolute -top-4 -right-4 z-10">
-        <div className="flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-black text-white shadow-xl ring-4 ring-white">
-          <Icon name="check" size={14} />
-        </div>
-      </div>
-      <PremiumButton onClick={onStart} className="px-5 py-3">Get free score</PremiumButton>
-    </div>
-
+    <PremiumButton onClick={onStart} className="px-5 py-3">Get free score</PremiumButton>
   </div></div></header>;
 }
 
-function ScoreCard() {
+
+function HeaderX({ onStart, onHome, credits}) {
+   const {
+    setMode,
+    setUser,
+    user,
+    handleLogout,
+    connectWithGoogle,
+  } = useAuth();
+
+  const token = localStorage.getItem("token");
+  const [open, setOpen] = useState(false);
+
+ 
+ 
+  return <header className="sticky top-0 z-50 border-b border-white/70 bg-white/80 backdrop-blur-xl">
+  <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4"><button onClick={onHome}><Logo /></button>
+ 
+  <div className="hidden items-center gap-8 text-sm font-bold text-slate-500 lg:flex">
+    <Link to="/terms" className="hover:text-slate-950"> Terms </Link>
+    <Link to="/privacy" className="hover:text-slate-950">Privacy</Link>
+    <Link to="/refund" className="hover:text-slate-950">Refund</Link>
+  </div>
+  
+  <div className="hidden md:block">
+    <button className="rounded-2xl bg-slate-950 font-black text-white px-7 py-4 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0"
+    onClick={()=>{window.location.replace("/");}} >Get back</button>
+  </div>
+  </div></header>;
+}
+
+function ScoreCard({scoreBreakdown}) {
   return <Card className="relative overflow-hidden rounded-[2.5rem] border-white/10 bg-white shadow-2xl"><CardContent className="p-0"><div className="p-7 text-white" style={{ background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.navy})` }}><div className="flex items-center justify-between"><span className="font-black">ATS Match Analysis</span><Icon name="sparkles" className="text-cyan-300" /></div><div className="mt-7 grid grid-cols-2 gap-4"><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">Current score</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.warning }}>62%</div></div><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">After CVMatch</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.success }}>86%</div></div></div></div><div className="space-y-4 p-7">{scoreBreakdown.slice(0, 3).map((item) => <ScoreBar key={item.label} {...item}/>)}</div></CardContent></Card>;
 }
 
-function LandingPage({ onStart, setMode }) {
-  return <><Hero onStart={onStart}  setMode={setMode} /><ProofSection onStart={onStart}/><PainSection/><HowItWorks onStart={onStart}/><ValueSection/><PricingSection onStart={onStart}  setMode={setMode} /><MobileSection/><FinalCTA onStart={onStart}/></>;
+function FakeScoreCard() {
+  return <Card className="relative overflow-hidden rounded-[2.5rem] border-white/10 bg-white shadow-2xl"><CardContent className="p-0"><div className="p-7 text-white" style={{ background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.navy})` }}><div className="flex items-center justify-between"><span className="font-black">ATS Match Analysis</span><Icon name="sparkles" className="text-cyan-300" /></div><div className="mt-7 grid grid-cols-2 gap-4"><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">Current score</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.warning }}>62%</div></div><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">After CVMatch</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.success }}>86%</div></div></div></div><div className="space-y-4 p-7">{fakeScoreBreakdown.slice(0, 3).map((item) => <ScoreBar key={item.label} {...item}/>)}</div></CardContent></Card>;
+}
+
+function LandingPage({ onStart, setMode  }) {
+  const [mobileModalOpen, setMobileModalOpen] = useState(false);
+  const goMobile = () =>{ trackMeta("wantMobileApp", { method: "google", location: "site_header_or_landing" }, true); setMobileModalOpen(true);}
+
+  return <><Hero onStart={onStart}  setMode={setMode} /><ProofSection onStart={onStart}/><PainSection/><HowItWorks onStart={onStart}/><ValueSection/><PricingSection onStart={onStart}  setMode={setMode} /><MobileSection goMobile={goMobile} /><FinalCTA onStart={onStart}/>
+          <MobileComingSoonModal open={mobileModalOpen} onClose={() => setMobileModalOpen(false)}/>
+          </>;
 }
 
 
 
-function Hero({ onStart, setMode }) {
-  return <section className="relative overflow-hidden" style={{ background: `radial-gradient(circle at 20% 10%, rgba(34,211,238,0.16), transparent 30%), radial-gradient(circle at 85% 15%, rgba(59,130,246,0.16), transparent 28%), linear-gradient(180deg,#FFFFFF,${COLORS.cream})` }}><div className="absolute -right-24 top-20 h-96 w-96 rounded-full blur-3xl" style={{ background: "rgba(34,211,238,0.16)" }} /><div className="mx-auto grid max-w-7xl items-center gap-12 px-4 py-20 lg:grid-cols-[1.06fr_0.94fr]"><motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }}><div className="mb-6 inline-flex items-center gap-2 rounded-full border border-cyan-100 bg-white px-4 py-2 text-sm font-black text-slate-700 shadow-sm"><Icon name="sparkles" size={16} className="text-cyan-500" /> Built for US ATS systems</div><h1 className="max-w-4xl text-5xl font-black leading-[0.92] tracking-tight text-slate-950 md:text-7xl xl:text-8xl">Applied to jobs and got no replies?</h1><p className="mt-7 max-w-2xl text-xl leading-relaxed text-slate-600">Your resume may not be ATS-ready for US jobs. CVMatch AI gives you a free match score, shows what’s missing, then helps you unlock a recruiter-ready resume and cover letter.</p>
+function Hero({ onStart, setMode , scoreBreakdown }) {
+  return <section className="relative overflow-hidden" style={{ background: `radial-gradient(circle at 20% 10%, rgba(34,211,238,0.16), transparent 30%), radial-gradient(circle at 85% 15%, rgba(59,130,246,0.16), transparent 28%), linear-gradient(180deg,#FFFFFF,${COLORS.cream})` }}><div className="absolute -right-24 top-20 h-96 w-96 rounded-full blur-3xl" style={{ background: "rgba(34,211,238,0.16)" }} /><div className="mx-auto grid max-w-7xl items-center gap-12 px-4 py-20 lg:grid-cols-[1.06fr_0.94fr]"><motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }}><div className="mb-6 inline-flex items-center gap-2 rounded-full border border-cyan-100 bg-white px-4 py-2 text-sm font-black text-slate-700 shadow-sm"><Icon name="sparkles" size={16} className="text-cyan-500" /> Built for US ATS systems</div><h1 className="max-w-4xl text-5xl font-black leading-[0.92] tracking-tight text-slate-950 md:text-7xl xl:text-8xl">Applied for jobs and got no replies?</h1><p className="mt-7 max-w-2xl text-xl leading-relaxed text-slate-600">Your resume may not be ATS-ready for US jobs. CVMatch AI gives you a free match score, shows what’s missing, then helps you unlock a recruiter-ready resume and cover letter.</p>
   <div className="mt-9 flex flex-col gap-3 sm:flex-row">
     
-    {/* <PremiumButton onClick={onStart}>Get my free resume score <Icon name="arrow" size={18} className="ml-2" /></PremiumButton> */}
-    <div className=" flex  relative ">
-      <div className="absolute -top-4 -right-4 z-10">
-        <div className="flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-black text-white shadow-xl ring-4 ring-white">
-          <Icon name="check" size={14} />
-        </div>
-      </div>
-      {/* Bouton */}
-      <PremiumButton onClick={onStart}>
-        Get my free resume score
-        <Icon name="arrow" size={18} className="ml-2" />
-      </PremiumButton>
-    </div>
-    <a href="#proof"><Button variant="outline" className="rounded-2xl border-slate-200 bg-white px-7 py-6 font-black">See before / after</Button></a>
+    <PremiumButton onClick={onStart}>Get my free resume score <Icon name="arrow" size={18} className="ml-2" /></PremiumButton>
+    <a onClick={()=>{trackMeta("seeBeforeAndAfter", { method: "google", location: "site_header_or_landing" }, true);}} href="#proof"><Button variant="outline" className="rounded-2xl border-slate-200 bg-white px-7 py-6 font-black">See before / after</Button></a>
   </div>
   
-  <div className="mt-8 flex flex-wrap gap-3 text-sm text-slate-600">{["Free ATS resume score", "Built for US job applications", "No signup before analysis", "$5 one-time unlock"].map((item) => <div key={item} className="flex items-center gap-2 rounded-full border border-slate-100 bg-white px-3 py-2 shadow-sm"><Icon name="check" size={14} className="text-cyan-500" />{item}</div>)}</div></motion.div><motion.div initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.1 }} className="relative"><div className="absolute -inset-8 rounded-[4rem] blur-2xl" style={{ background: "linear-gradient(135deg,rgba(59,130,246,0.18),rgba(34,211,238,0.14),transparent)" }} /><ScoreCard /></motion.div></div>
- 
+  <div className="mt-8 flex flex-wrap gap-3 text-sm text-slate-600">{["Free ATS resume score", "Built for US job applications", "No signup before analysis", "$5 one-time unlock"].map((item) => <div key={item} className="flex items-center gap-2 rounded-full border border-slate-100 bg-white px-3 py-2 shadow-sm"><Icon name="check" size={14} className="text-cyan-500" />{item}</div>)}</div></motion.div><motion.div initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.1 }} className="relative"><div className="absolute -inset-8 rounded-[4rem] blur-2xl" style={{ background: "linear-gradient(135deg,rgba(59,130,246,0.18),rgba(34,211,238,0.14),transparent)" }} />
+    <FakeScoreCard />
+  </motion.div></div>
+
   
   </section>;
 }
 
-function ProofSection({ onStart }) { return <section id="proof" className="mx-auto max-w-7xl px-4 py-20"><div className="mx-auto max-w-3xl text-center"><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-500">Proof first</p><h2 className="mt-3 text-4xl font-black tracking-tight text-slate-950 md:text-6xl">See exactly why your resume gets rejected.</h2><p className="mt-4 text-lg leading-relaxed text-slate-600">Most resumes fail because they don’t match job requirements or ATS filters. CVMatch AI shows the problem before asking you to pay.</p></div><div className="mt-12 grid gap-6 lg:grid-cols-2"><Card className="rounded-[2rem] border-slate-100 bg-white shadow-xl"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">Before</h3><span className="rounded-full bg-red-50 px-3 py-1 text-xs font-black text-red-600">Rejected</span></div><div className="mt-5 rounded-3xl bg-slate-50 p-5 text-sm leading-7 text-slate-500">Generic summary. Missing job keywords. Weak bullet points. Low ATS readability. Same resume sent everywhere.</div><div className="mt-5"><div className="mb-2 flex justify-between text-sm font-black"><span>ATS match</span><span style={{ color: COLORS.warning }}>62%</span></div><Progress value={62} color={COLORS.warning} /></div></CardContent></Card><Card className="rounded-[2rem] border-cyan-100 bg-white shadow-xl"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">After CVMatch AI</h3><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-600">Interview-ready</span></div><div className="mt-5 rounded-3xl p-5 text-sm leading-7 text-slate-700" style={{ background: COLORS.softBlue }}>US-standard resume structure. ATS keywords included. Stronger bullet points. Matching cover letter. Premium PDF ready to send.</div><div className="mt-5"><div className="mb-2 flex justify-between text-sm font-black"><span>ATS match</span><span style={{ color: COLORS.success }}>86%</span></div><Progress value={86} color={COLORS.success} /></div></CardContent></Card></div>
+
+
+
+
+
+
+function ProofSection({ onStart }) { return <section id="proof" className="mx-auto max-w-7xl px-4 py-20"><div className="mx-auto max-w-3xl text-center"><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-500">Proof first</p><h2 className="mt-3 text-4xl font-black tracking-tight text-slate-950 md:text-6xl">See exactly why your resume gets rejected</h2><p className="mt-4 text-lg leading-relaxed text-slate-600">Most resumes fail because they don’t match job requirements or ATS filters. CVMatch AI shows the problem before asking you to pay.</p></div><div className="mt-12 grid gap-6 lg:grid-cols-2"><Card className="rounded-[2rem] border-slate-100 bg-white shadow-xl"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">Before</h3><span className="rounded-full bg-red-50 px-3 py-1 text-xs font-black text-red-600">Rejected</span></div><div className="mt-5 rounded-3xl bg-slate-50 p-5 text-sm leading-7 text-slate-500">Generic summary. Missing job keywords. Weak bullet points. Low ATS readability. Same resume sent everywhere.</div><div className="mt-5"><div className="mb-2 flex justify-between text-sm font-black"><span>ATS match</span><span style={{ color: COLORS.warning }}>62%</span></div><Progress value={62} color={COLORS.warning} /></div></CardContent></Card><Card className="rounded-[2rem] border-cyan-100 bg-white shadow-xl"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">After CVMatch AI</h3><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-600">Interview-ready</span></div><div className="mt-5 rounded-3xl p-5 text-sm leading-7 text-slate-700" style={{ background: COLORS.softBlue }}>US-standard resume structure. ATS keywords included. Stronger bullet points. Matching cover letter. Premium PDF ready to send.</div><div className="mt-5"><div className="mb-2 flex justify-between text-sm font-black"><span>ATS match</span><span style={{ color: COLORS.success }}>86%</span></div><Progress value={86} color={COLORS.success} /></div></CardContent></Card></div>
 <div className="mt-10 text-center">
-  {/* <PremiumButton onClick={onStart}>Check my resume for free</PremiumButton> */}
-  <div className="relative inline-block ">
-    <div className="absolute -top-4 -right-4 z-10">
-      <div className="flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-black text-white shadow-xl ring-4 ring-white">
-        <Icon name="check" size={14} />
-      </div>
-    </div>
-    <PremiumButton onClick={onStart}>Check my resume for free</PremiumButton>
-  </div>
+  <PremiumButton onClick={onStart}>Check my resume for free</PremiumButton>
+  
 </div>
 </section>; }
 
-function PainSection() { const problems = ["You send the same resume everywhere", "Your CV is missing the right keywords", "ATS filters reject you before a human sees you", "You don’t know what to fix"]; return <section className="bg-slate-950 py-20 text-white"><div className="mx-auto grid max-w-7xl gap-10 px-4 lg:grid-cols-2 lg:items-center"><div><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-300">The real problem</p><h2 className="mt-3 text-4xl font-black tracking-tight md:text-6xl">It’s not always the market. Sometimes it’s your resume.</h2><p className="mt-5 text-lg leading-relaxed text-white/55">If your resume does not match the role, the ATS may filter it out before a recruiter even sees it.</p></div><div className="grid gap-3">{problems.map((problem) => <div key={problem} className="flex items-start gap-3 rounded-3xl border border-white/10 bg-white/5 p-5"><Icon name="alert" className="mt-1 text-cyan-300" /><span className="font-bold text-white/85">{problem}</span></div>)}</div></div></section>; }
+function PainSection() { const problems = ["You send the same resume everywhere", "Your CV is missing the right keywords", "ATS filters reject you before a human sees you", "You don’t know what to fix"]; return <section className="bg-slate-950 py-20 text-white"><div className="mx-auto grid max-w-7xl gap-10 px-4 lg:grid-cols-2 lg:items-center"><div><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-300">The real problem</p><h2 className="mt-3 text-4xl font-black tracking-tight md:text-6xl">It’s not always the market. Sometimes it’s your resume</h2><p className="mt-5 text-lg leading-relaxed text-white/55">If your resume does not match the role, the ATS may filter it out before a recruiter even sees it</p></div><div className="grid gap-3">{problems.map((problem) => <div key={problem} className="flex items-start gap-3 rounded-3xl border border-white/10 bg-white/5 p-5"><Icon name="alert" className="mt-1 text-cyan-300" /><span className="font-bold text-white/85">{problem}</span></div>)}</div></div></section>; }
 
-function HowItWorks({ onStart }) { const steps = [["upload", "Upload your resume", "PDF, DOCX or text. No account required before your free score."], ["briefcase", "Paste the job description", "The analysis becomes more accurate when you paste the exact US job post."], ["sparkles", "Unlock your job-ready resume", "Get the rewritten resume, cover letter, keywords and premium PDF."]]; return <section id="how" className="mx-auto max-w-7xl px-4 py-20"><div className="max-w-3xl"><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-500">How it works</p><h2 className="mt-3 text-4xl font-black md:text-6xl">Fix your resume in 3 simple steps.</h2></div><div className="mt-10 grid gap-5 md:grid-cols-3">{steps.map(([icon, title, text], index) => <Card key={title} className="rounded-[2rem] border-slate-100 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-2xl"><CardContent className="p-7"><div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl text-white" style={{ background: `linear-gradient(135deg, ${COLORS.blue}, ${COLORS.teal})` }}><Icon name={icon} /></div><div className="mb-3 text-sm font-black text-cyan-500">STEP {index + 1}</div><h3 className="text-2xl font-black">{title}</h3><p className="mt-2 leading-relaxed text-slate-600">{text}</p></CardContent></Card>)}</div>
+function HowItWorks({ onStart }) { const steps = [["upload", "Upload your resume", "PDF, DOCX or text. No account required before your free score"], ["briefcase", "Paste the job description", "The analysis becomes more accurate when you paste the exact US job post"], ["sparkles", "Unlock your job-ready resume", "Get the rewritten resume, cover letter, keywords and premium PDF"]]; return <section id="how" className="mx-auto max-w-7xl px-4 py-20"><div className="max-w-3xl"><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-500">How it works</p><h2 className="mt-3 text-4xl font-black md:text-6xl">Fix your resume in 3 simple steps</h2></div><div className="mt-10 grid gap-5 md:grid-cols-3">{steps.map(([icon, title, text], index) => <Card key={title} className="rounded-[2rem] border-slate-100 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-2xl"><CardContent className="p-7"><div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl text-white" style={{ background: `linear-gradient(135deg, ${COLORS.blue}, ${COLORS.teal})` }}><Icon name={icon} /></div><div className="mb-3 text-sm font-black text-cyan-500">STEP {index + 1}</div><h3 className="text-2xl font-black">{title}</h3><p className="mt-2 leading-relaxed text-slate-600">{text}</p></CardContent></Card>)}</div>
 <div className="mt-10">
-  {/* <PremiumButton onClick={onStart}>Get started for free</PremiumButton> */}
-  <div className="relative inline-block ">
-    <div className="absolute -top-4 -right-4 z-10">
-      <div className="flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-black text-white shadow-xl ring-4 ring-white">
-        <Icon name="check" size={14} />
-      </div>
-    </div>
-    <PremiumButton onClick={onStart}>Get started for free</PremiumButton>
-  </div>
+  <PremiumButton onClick={onStart}>Get started for free</PremiumButton>
 </div></section>; }
 
-function ValueSection() { return <section className="mx-auto max-w-7xl px-4 py-20"><div className="rounded-[3rem] p-8 md:p-12" style={{ background: `linear-gradient(135deg, ${COLORS.softBlue}, #FFFFFF)` }}><div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-center"><div><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-600">What you get</p><h2 className="mt-3 text-4xl font-black md:text-5xl">Everything needed for one stronger US job application.</h2></div><div className="grid gap-3 sm:grid-cols-2">{["ATS match score", "Missing keywords", "US-standard resume rewrite", "Cover letter", "Premium PDF download", "Before / after comparison"].map((item) => <div key={item} className="flex items-center gap-3 rounded-2xl bg-white p-4 font-bold shadow-sm"><Icon name="check" className="text-cyan-500" />{item}</div>)}</div></div></div></section>; }
+function ValueSection() { return <section className="mx-auto max-w-7xl px-4 py-20"><div className="rounded-[3rem] p-8 md:p-12" style={{ background: `linear-gradient(135deg, ${COLORS.softBlue}, #FFFFFF)` }}><div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-center"><div><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-600">What you get</p><h2 className="mt-3 text-4xl font-black md:text-5xl">Everything needed for one stronger US job application</h2></div><div className="grid gap-3 sm:grid-cols-2">{["ATS match score", "Missing keywords", "US-standard resume rewrite", "Cover letter", "Premium PDF download", "Before / after comparison"].map((item) => <div key={item} className="flex items-center gap-3 rounded-2xl bg-white p-4 font-bold shadow-sm"><Icon name="check" className="text-cyan-500" />{item}</div>)}</div></div></div></section>; }
 
-function PricingSection({ onStart, setMode }) {
+function PricingSection({ onStart }) {
+
+  const {
+    setMode,
+    user,
+    connectWithGoogle,
+    handleLogout,
+  } = useAuth();
+
   const [pricingPlans, setPricingPlans] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const [url, setUrl] = useState("");
-  const seeplan = (uri) => {
-    window.open(uri, "_blank");
-  };
 
-  const handlePlanClick = async (plan) => {
-    localStorage.setItem( "selected_plan_url", plan.url  );
+  const handlePlanClick = async (plan) => { 
+    trackMeta(`subscription_${plan.price}`, { method: "google", location: "site_CVMatchApp" }, true);
+    localStorage.setItem( "selected_plan", plan  );
     try {
 
-      const response = await fetch( "http://api.cvmatchai.us/api/v1/me", { credentials: "include" });
+      const token = localStorage.getItem("token");
+      const response = await fetch( "https://api.cvmatchai.us/api/v1/auth/me",  {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json"
+        }
+      });
 
-      if (response.ok) {
-        setMode("dashboard");
+      // Non connecté
+      if (!response.ok) {
+        connectWithGoogle();
         return;
       }
-    } catch (error) { console.log("Not authenticated"); }
 
-    // GOOGLE LOGIN
-    // window.location.href = "http://api.cvmatchai.us/auth/google/redirect";
-    window.location.href = "http://api.cvmatchai.us/api/auth/google";
+
+      if (plan.provider === "paddle") {
+        // Backend Laravel crée l'URL checkout Paddle
+        const checkoutResponse = await fetch( `https://api.cvmatchai.us/api/v1/payments/paddle/checkout`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+              Accept: "application/json",
+            },
+            body: JSON.stringify({
+              price_id: plan.price_id,
+              plan_name: plan.name,
+            }),
+          }
+        );
+        const checkoutData = await checkoutResponse.json();
+
+        if (checkoutData?.checkout_url) {
+          // Redirection vers page hébergée Paddle
+          window.location.href = checkoutData.checkout_url;
+          return;
+        }
+
+        throw new Error("Impossible de créer le checkout Paddle");
+
+        // window.Paddle.Checkout.open({
+        //   items: [
+        //     {
+        //       priceId: plan.price_id,
+        //       quantity: 1,
+        //     },
+        //   ],
+
+        //   customer: {
+        //     email: user?.email,
+        //   },
+
+        //   customData: {
+        //     user_id: user?.id,
+        //     plan_name: plan.name,
+        //   },
+        // });
+
+        return;
+      }
+
+     
+      // setMode("dashboard");
+      // return;
+      // window.location.href = "https://api.cvmatchai.us/api/v1/payments/webhooks/simulation";
+      if (plan.provider == "gumroad" && plan.url) {
+        const url = `https://api.cvmatchai.us/api/payments/gumroad?link=${encodeURIComponent(plan.url)}`;
+        window.location.href = url;
+        return;
+      }
+     
+    } catch (error) { 
+      console.error(error);
+    }
+   
   };
 
-  localStorage.clear();
+ 
 
   useEffect(() => {
     const fetchPlans = async () => {
       try {
-        const res = await fetch("http://api.cvmatchai.us/api/v1/credit-plans", {
+        const res = await fetch("https://api.cvmatchai.us/api/v1/credit-plans", {
                             credentials: "include"
                           });
         const data = await res.json();
@@ -388,45 +620,26 @@ function PricingSection({ onStart, setMode }) {
     return <div className="text-center py-20">Loading pricing...</div>;
   }
   
-  return <section id="pricing" className="mx-auto max-w-7xl px-4 py-20"><div className="mx-auto max-w-3xl text-center"><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-500">Simple pricing</p><h2 className="mt-3 text-4xl font-black md:text-6xl">Start with one job application.</h2><p className="mt-4 text-lg text-slate-600">Each optimized resume consumes 1 credit. No subscription. No hidden fees. Unlock the optimized resume and cover letter for one targeted US job application.</p></div>
+  return <section id="pricing" className="mx-auto max-w-7xl px-4 py-20"><div className="mx-auto max-w-3xl text-center"><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-500">Simple pricing</p><h2 className="mt-3 text-4xl font-black md:text-6xl">Start with one job application</h2><p className="mt-4 text-lg text-slate-600">Each optimized resume consumes 1 credit. No subscription. No hidden fees. Unlock the optimized resume and cover letter for one targeted US job application.</p></div>
   <div className="grid lg:grid-cols-3 gap-5 mt-10">{pricingPlans.map((plan, index) => 
-    <Card key={plan.name} className={`rounded-[2.5rem] border-slate-100 bg-white transition-all duration-200 hover:-translate-y-1 hover:shadow-2xl ${index === 1 ? "ring-2 ring-cyan-300" : ""}`}>
+    <Card key={plan.id} className={`rounded-[2.5rem] border-slate-100 bg-white transition-all duration-200 hover:-translate-y-1 hover:shadow-2xl ${index === 1 ? "ring-2 ring-cyan-300" : ""}`}>
       <CardContent className="p-7">
-        <div className="flex items-center justify-between gap-3"><h3 className="text-2xl font-black">{plan.name}</h3><span className={`text-xs font-black rounded-full px-3 py-2 ${index === 1 ? "bg-cyan-100 text-cyan-700" : "bg-slate-100 text-slate-700"}`}>{plan.badge}</span></div>
+        <div className="flex items-center justify-between gap-3"><h3 className="text-2xl font-black">{plan.name}</h3>{plan.badge &&<span className={`text-xs font-black rounded-full px-3 py-2 ${index === 1 ? "bg-cyan-100 text-cyan-700" : "bg-slate-100 text-slate-700"}`}>{plan.badge}</span>}</div>
         <div className="mt-5"><span className="text-5xl font-black">{plan.price}</span><p className="mt-1 text-slate-500">{plan.subtitle}</p></div>
-        <div className="grid gap-3 mt-7">{plan.features.map((item) => <div key={item} className="flex items-center gap-2 p-3 rounded-2xl bg-slate-50 text-sm font-bold"><Icon name="check" size={16} className="text-cyan-500"/>{item}</div>)}</div>
-        {/* <PremiumButton onClick={() => handlePlanClick(plan)} className="w-full mt-7" variant={index === 1 ? "primary" : "gold"}>{plan.cta}</PremiumButton> */}
-        
-        <div className="relative">
-          <div className="absolute -top-0 -right-4 z-10">
-            <div className="flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-black text-white shadow-xl ring-4 ring-white">
-              <Icon name="check" size={14} />
-            </div>
-          </div>
-          <PremiumButton onClick={() => handlePlanClick(plan)} className="w-full mt-7" variant={index === 1 ? "primary" : "gold"}>{plan.cta}</PremiumButton>
-        </div>
+        <div className="grid gap-3 mt-7">{plan.features.map((item) => <div key={item} className="flex items-center gap-2 p-3 rounded-2xl bg-slate-50 text-sm font-bold"><Icon name="check" size={16} className="text-cyan-500"/>{item}</div>)}{plan.description && <div  className="flex items-center gap-2 p-3 rounded-2xl bg-slate-50 text-sm font-bold">{plan.description}</div>}</div>
+        <PremiumButton onClick={() => handlePlanClick(plan)} className="w-full mt-7" variant={index === 1 ? "primary" : "gold"}>{plan.cta}</PremiumButton>
       </CardContent>
     </Card>)}
   </div></section>; }
 
-function MobileSection() { return <section id="mobile" className="mx-auto max-w-7xl px-4 py-20"><div className="grid gap-10 overflow-hidden rounded-[3rem] bg-slate-950 p-8 text-white md:p-12 lg:grid-cols-2 lg:items-center"><div><div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm font-black text-cyan-200"><Icon name="phone" size={16} /> Mobile app coming soon</div><h2 className="text-4xl font-black md:text-6xl">Continue on mobile anytime.</h2><p className="mt-5 text-lg leading-relaxed text-white/55">Save resumes, track applications and optimize faster from your phone. For now, use the web version.</p><div className="mt-8 flex flex-col gap-3 sm:flex-row"><AppStoreButton type="apple" onClick={() => {}}/><AppStoreButton type="google" onClick={() => {}}/></div></div><div className="mx-auto w-full max-w-sm rounded-[3rem] border border-white/10 bg-white/5 p-4"><div className="overflow-hidden rounded-[2.4rem] bg-white text-slate-950"><div className="p-5 text-white" style={{ background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.navy})` }}><Logo dark /></div><div className="space-y-3 p-5"><div className="rounded-3xl bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">Latest score</p><div className="mt-2 text-5xl font-black text-emerald-500">86%</div><Progress value={86} color={COLORS.success} /></div>{["Resume ready", "Cover letter generated", "Apply checklist"].map((item) => <div key={item} className="flex items-center gap-3 rounded-2xl border border-slate-100 p-3 font-bold"><Icon name="check" className="text-cyan-500" size={16} />{item}</div>)}</div></div></div></div></section>; }
+function MobileSection({goMobile}) { return <section id="mobile" className="mx-auto max-w-7xl px-4 py-20"><div className="grid gap-10 overflow-hidden rounded-[3rem] bg-slate-950 p-8 text-white md:p-12 lg:grid-cols-2 lg:items-center"><div><div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm font-black text-cyan-200"><Icon name="phone" size={16} /> Mobile app coming soon</div><h2 className="text-4xl font-black md:text-6xl">Continue on mobile anytime</h2><p className="mt-5 text-lg leading-relaxed text-white/55">Save resumes, track applications and optimize faster from your phone. For now, use the web version</p><div className="mt-8 flex flex-col gap-3 sm:flex-row"><AppStoreButton type="apple" onClick={goMobile}/><AppStoreButton type="google" onClick={goMobile}/></div></div><div className="mx-auto w-full max-w-sm rounded-[3rem] border border-white/10 bg-white/5 p-4"><div className="overflow-hidden rounded-[2.4rem] bg-white text-slate-950"><div className="p-5 text-white" style={{ background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.navy})` }}><Logo dark /></div><div className="space-y-3 p-5"><div className="rounded-3xl bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">Latest score</p><div className="mt-2 text-5xl font-black text-emerald-500">86%</div><Progress value={86} color={COLORS.success} /></div>{["Resume ready", "Cover letter generated", "Apply checklist"].map((item) => <div key={item} className="flex items-center gap-3 rounded-2xl border border-slate-100 p-3 font-bold"><Icon name="check" className="text-cyan-500" size={16} />{item}</div>)}</div></div></div></div></section>; }
 
 function FinalCTA({ onStart }) { return <section className="mx-auto max-w-7xl px-4 pb-20">
   <div className="rounded-[3rem] p-10 text-center md:p-14" style={{ background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.navy})` }}>
     <div className="flex justify-center"><Logo dark /></div>
-    <h2 className="mx-auto mt-8 max-w-3xl text-4xl font-black tracking-tight text-white md:text-6xl">Stop applying with the wrong resume.</h2><p className="mt-4 text-lg text-white/55">Start with a free resume match score.</p>
-    {/* <PremiumButton onClick={onStart} className="mt-8">Get my free resume score</PremiumButton> */}
-    <div className="flex justify-center">
-      <div className="grid  gap-5 ">
-        <div className="relative">
-          <div className="absolute -top-0 -right-4 z-10">
-            <div className="flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-black text-white shadow-xl ring-4 ring-white">
-              <Icon name="check" size={14} />
-            </div>
-          </div>
-          <PremiumButton onClick={onStart} className="mt-8">Get my free resume score</PremiumButton>
-        </div>
-    </div></div>
+    <h2 className="mx-auto mt-8 max-w-3xl text-4xl font-black tracking-tight text-white md:text-6xl">Stop applying with the wrong resume</h2><p className="mt-4 text-lg text-white/55">Start with a free resume match score</p>
+    <PremiumButton onClick={onStart} className="mt-8">Get my free resume score</PremiumButton>
+    
   </div></section>; }
 
 function ResumeUpload({ next, resumeName, setResumeName , resumeFile, setResumeFile
@@ -510,41 +723,436 @@ function ResumeUpload({ next, resumeName, setResumeName , resumeFile, setResumeF
   </div>
 ); }
 
-function JobDescription({ next, jobText, setJobText }) { return <div className="max-w-3xl mx-auto py-12 px-4">
-  <h2 className="text-4xl md:text-5xl font-black tracking-tight text-center">Paste the job description</h2><p className="text-slate-600 text-center mt-3">The score becomes more accurate when you paste the exact US job post.</p>
-  <textarea value={jobText} onChange={(event) => setJobText(event.target.value)} className="w-full h-72 mt-8 rounded-3xl border border-slate-200 bg-white p-5 outline-none focus:ring-4 focus:ring-cyan-100 resize-none" placeholder="Paste job description here..."/>
-    {/* <textarea
-      value={jobText}
-      onChange={(event) => setJobText(event.target.value)}
-      className="w-full h-72 mt-8 rounded-3xl border border-slate-200 bg-white p-5 outline-none focus:ring-4 focus:ring-cyan-100 resize-none"
-      placeholder="Paste job description here..."
-    /> */}
+function JobDescription({ next, jobText, setJobText ,resumeUploading}) { 
 
-    <span>Minimum recommended: 80 characters</span><span> {jobText.length} chars</span>
-  <PremiumButton onClick={next} disabled={jobText.length < 80} className="w-full mt-6">Analyze my resume</PremiumButton>
-</div>; }
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleNext = async () => {
+    setIsSubmitting(true);
+    try { await next(); } catch (error) {console.error(error); setIsSubmitting(false);}
+  };
+  const isDisabled = jobText.length < 80 || resumeUploading || isSubmitting;
+
+  return <div className="max-w-3xl mx-auto py-12 px-4">
+    <h2 className="text-4xl md:text-5xl font-black tracking-tight text-center">Paste the job description</h2><p className="text-slate-600 text-center mt-3">The score becomes more accurate when you paste the exact US job post.</p>
+    <textarea value={jobText} onChange={(event) => setJobText(event.target.value)} className="w-full h-72 mt-8 rounded-3xl border border-slate-200 bg-white p-5 outline-none focus:ring-4 focus:ring-cyan-100 resize-none" placeholder="Paste job description here..."/>
+   
+    <div className="flex justify-between mt-2 text-sm text-slate-500"><span>Minimum recommended: 80 characters</span><span> {jobText.length} chars</span></div>
+    {resumeUploading && (
+        <div className="mt-4 flex rounded-2xl bg-cyan-50 border border-cyan-100 p-4 text-cyan-700 text-sm">
+          <span>Preparing resume in the background</span>
+          <span className="ml-1 flex"  style={{ fontSize: "x-large" }}>
+            <span className="animate-bounce [animation-delay:0ms]">.</span>
+            <span className="animate-bounce [animation-delay:200ms]">.</span>
+            <span className="animate-bounce [animation-delay:400ms]">.</span>
+          </span>
+        </div>
+      )}
+    <PremiumButton onClick={handleNext} disabled={isDisabled} className="w-full mt-6">{isSubmitting ? "Analyzing..." : "Analyze my resume"}</PremiumButton>
+  </div>; }
 
 function Analysis({ next }) { const [progress, setProgress] = useState(0); React.useEffect(() => { const timers = [22, 48, 76, 100].map((value, index) => window.setTimeout(() => setProgress(value), (index + 1) * 700)); const done = window.setTimeout(next, 3400); return () => { timers.forEach(window.clearTimeout); window.clearTimeout(done); }; }, [next]); return <div className="max-w-2xl mx-auto py-20 text-center min-h-[68vh] flex flex-col justify-center px-4"><motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: "linear" }} className="h-24 w-24 rounded-[2rem] bg-cyan-50 text-cyan-600 flex items-center justify-center mx-auto shadow-xl"><Icon name="sparkles" size={40}/></motion.div><h2 className="text-4xl md:text-5xl font-black mt-8">Analyzing your ATS match...</h2><p className="text-slate-600 mt-3">Checking keywords, experience relevance, ATS readability, and clarity.</p><div className="mt-8"><Progress value={progress} color={COLORS.teal}/></div><div className="grid grid-cols-4 gap-3 mt-6 text-xs text-slate-500"><span>Keywords</span><span>Experience</span><span>ATS</span><span>Rewrite</span></div></div>; }
 
-function FreeResult({ next, goMobile }) { return <div className="max-w-7xl mx-auto py-10 px-4"><div className="text-center mb-8"><p className="text-sm font-black uppercase tracking-widest text-cyan-500">Free analysis</p><h2 className="text-4xl md:text-5xl font-black mt-2">Your resume is not job-ready yet.</h2><p className="text-slate-600 mt-3">Unlock the optimized version to improve your ATS match from <span className="font-black" style={{color: COLORS.warning}}>62%</span> to <span className="font-black" style={{color: COLORS.success}}>86%</span>.</p></div><div className="grid lg:grid-cols-[0.95fr_1.05fr] gap-6"><Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7"><div className="flex items-center justify-between"><p className="text-sm font-black text-slate-500">Current Match Score</p><span className="px-3 py-1 rounded-full bg-red-50 text-red-700 text-xs font-black">Needs work</span></div><div className="flex items-end gap-3 mt-3"><span className="text-7xl font-black" style={{ color: COLORS.warning }}>62%</span><span className="text-slate-500 mb-3">before optimization</span></div><div className="mt-6"><Progress value={62} color={COLORS.warning}/></div><div className="grid gap-3 mt-6">{scoreBreakdown.map((item) => <ScoreBar key={item.label} {...item}/>)}</div></CardContent></Card><div className="space-y-6"><Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7"><h3 className="text-2xl font-black">Critical issues found</h3><div className="mt-5 space-y-3">{sampleProblems.map((problem, index) => <div key={index} className="flex gap-3 p-3 rounded-2xl bg-red-50 text-red-950"><Icon name="alert" size={18} className="mt-0.5"/><span className="text-sm font-bold">{problem}</span></div>)}</div><h4 className="font-black mt-6">Missing keywords</h4><div className="flex flex-wrap gap-2 mt-3">{sampleKeywords.map((keyword) => <span key={keyword} className="px-3 py-2 rounded-full text-xs font-black bg-cyan-50 text-cyan-700">{keyword}</span>)}</div></CardContent></Card><BeforeAfter locked/><Card className="rounded-[2rem] shadow-sm border-slate-100 bg-slate-950 text-white"><CardContent className="p-7"><div className="flex items-center gap-2 font-black text-xl"><Icon name="lock"/> Unlock your optimized resume</div><p className="text-white/55 mt-2 text-sm leading-relaxed">Get the full rewritten resume, US-style cover letter, premium PDF, and before/after comparison.</p><PremiumButton onClick={next} className="w-full mt-5">Unlock Full Resume — $5</PremiumButton><Button variant="outline" className="rounded-2xl mt-3 bg-transparent border-white/20 text-white hover:bg-white/10 w-full py-4" onClick={goMobile}>Continue on mobile app</Button></CardContent></Card></div></div></div>; }
+function FreeResult({ next,restart, goMobile }) { 
+  const {
+    setMode,
+    connectWithGoogle,
+  } = useAuth();
+  const [analyseResult, setAnalyseResult] = useState({
+    // critical_issues: [],
+    // missing_keywords: [],
+  });
+  const token = localStorage.getItem("token");
+  const guestToken = localStorage.getItem("guest_token");
+  const analysisId = localStorage.getItem("analysisId");
 
-function BeforeAfter({ locked = false }) { return <Card className="rounded-[2rem] shadow-sm border-slate-100 overflow-hidden bg-white"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">Before → After</h3>{locked && <span className="text-xs font-black bg-cyan-50 text-cyan-700 rounded-full px-3 py-2 flex items-center gap-1"><Icon name="lock" size={13}/> Locked preview</span>}</div><div className="grid md:grid-cols-2 gap-4 mt-5"><div className="rounded-3xl bg-slate-50 p-5 h-72 overflow-hidden"><p className="text-xs font-black uppercase tracking-widest text-slate-400 mb-3">Original</p><pre className="whitespace-pre-wrap text-xs leading-6 text-slate-600 font-sans">{originalResume}</pre></div><div className="relative rounded-3xl bg-slate-950 text-white p-5 h-72 overflow-hidden"><p className="text-xs font-black uppercase tracking-widest text-cyan-300 mb-3">Optimized</p><pre className={`whitespace-pre-wrap text-xs leading-6 font-sans ${locked ? "blur-sm select-none" : ""}`}>{optimizedResume}</pre>{locked && <div className="absolute inset-0 bg-gradient-to-b from-transparent via-slate-950/55 to-slate-950 flex items-end justify-center pb-5"><span className="rounded-2xl px-4 py-3 text-sm font-black bg-white text-slate-950">Unlock to view full optimized version</span></div>}</div></div></CardContent></Card>; }
+  useEffect(() => {
+    const fetchPlans = async () => {
+      try {
+        const headers = { Accept: "application/json", };
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        } else if (guestToken) {
+          headers["X-Guest-Token"] = guestToken;
+        }
+       
+        const res = await fetch(`https://api.cvmatchai.us/api/v1/analyses/${analysisId}`, {
+          credentials: "include",
+          headers,
+        });
+
+        if ( res.status === 401 ) {
+          if (token) connectWithGoogle();
+          return;
+        }
+        const data = await res.json();
+        setAnalyseResult(data.data);
+      } catch (error) {
+        console.error("Error loading pricing plans:", error);
+      } 
+    };
+
+    fetchPlans();
+  }, [token,guestToken]);
+
+  const originalResume = analyseResult?.posted_resume ;
+  const optimizedResume = analyseResult?.optimized_resume_text ;
+  
+  const originalScore =analyseResult?.score || 0;
+  const breakdown = analyseResult?.score_breakdown || {};
+
+  const optimized = analyseResult?.optimized_resume_analysis;
+  const optimizedBreakdown = optimized?.scoring_breakdown || {};
+  const optimizedScore = optimized?.overall_ats_score || 0;
+
+  const scoreBreakdown = [
+    {
+      label: "Keyword match",
+      value: breakdown.keyword_match || 0,
+      note: "Keyword alignment with the job description"
+    },
+    {
+      label: "Skills alignment",
+      value: breakdown.skills_alignment || 0,
+      note: "Relevant hard and soft skills match"
+    },
+    {
+      label: "Experience relevance",
+      value: breakdown.experience_relevance || 0,
+      note: "Experience fit for this role"
+    },
+    {
+      label: "Resume structure",
+      value: breakdown.resume_structure || 0,
+      note: "US resume formatting and clarity"
+    },
+    {
+      label: "ATS readability",
+      value: breakdown.ats_readability || 0,
+      note: "ATS parsing and readability"
+    },
+    {
+      label: "Achievement quality",
+      value: breakdown.achievement_quality || 0,
+      note: "Strength of measurable impact"
+    }
+  ];
+
+  return <div className="max-w-7xl mx-auto py-10 px-4">
+  <div className="text-center mb-8">
+    <p className="text-sm font-black uppercase tracking-widest text-cyan-500">Free analysis</p>
+    <h2 className="text-4xl md:text-5xl font-black mt-2">Your resume is not job-ready yet.</h2>
+    <p className="text-slate-600 mt-3">Unlock the optimized version to improve your ATS match from <span className="font-black" style={{color: COLORS.warning}}>{originalScore}%</span> to <span className="font-black" style={{color: COLORS.success}}>{optimizedScore}%</span>.</p>
+  </div>
+  <div className="grid lg:grid-cols-[0.95fr_1.05fr] gap-6">
+    <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7">
+      <div className="flex items-center justify-between"><p className="text-sm font-black text-slate-500">Current Match Score</p><span className="px-3 py-1 rounded-full bg-red-50 text-red-700 text-xs font-black"> { analyseResult?.match_level}</span></div>
+      <div className="flex items-end gap-3 mt-3"><span className="text-7xl font-black" style={{ color: COLORS.warning }}>{originalScore}%</span><span className="text-slate-500 mb-3">before optimization</span></div>
+      <div className="mt-6"><Progress value={originalScore} color={COLORS.warning}/></div>
+      <div className="grid gap-3 mt-6">{scoreBreakdown.map((item) => <ScoreBar key={item.label} {...item}/>)}</div>
+    </CardContent></Card>
+    <div className="space-y-6">
+      <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
+        <CardContent className="p-7">
+          <h3 className="text-2xl font-black">Critical issues found</h3>
+          {/* <div className="mt-5 space-y-3">{analyseResult.critical_issues.map((problem, index) => <div key={index} className="flex gap-3 p-3 rounded-2xl bg-red-50 text-red-950"><Icon name="alert" size={18} className="mt-0.5"/><span className="text-sm font-bold">{problem}</span></div>)}</div> */}
+          <div className="mt-5 space-y-3">{analyseResult?.detected_problems?.map((problem, index) => <div key={index} className="flex gap-3 p-3 rounded-2xl bg-red-50 text-red-950"><Icon name="alert" size={18} className="mt-0.5"/><span className="text-sm font-bold">{problem}</span></div>)}</div>
+          {analyseResult?.recruiter_risk_flags?.length > 0 && ( <>
+            <h4 className="font-black mt-6">Recruiter risk flags</h4>
+            <div className="mt-3 space-y-2"> {analyseResult.recruiter_risk_flags.map((risk, index) => (<div key={index} className="rounded-2xl bg-orange-50 text-orange-900 px-4 py-3 text-sm font-bold"> {risk} </div> ))} </div>
+            </> )}
+          {analyseResult?.missing_keywords?.length > 0 && (<>
+          <h4 className="font-black mt-6">Missing keywords</h4>
+          <div className="flex flex-wrap gap-2 mt-3">{analyseResult.missing_keywords.map((keyword) => <span key={keyword} className="px-3 py-2 rounded-full text-xs font-black bg-cyan-50 text-cyan-700">{keyword}</span>)}</div>
+          </> )}
+          {analyseResult?.missing_hard_skills?.length > 0 && (  <>
+          <h4 className="font-black mt-6">Missing hard skills</h4>
+          <div className="flex flex-wrap gap-2 mt-3"> {analyseResult.missing_hard_skills.map((skill) => ( <span key={skill} className="px-3 py-2 rounded-full text-xs font-black bg-slate-100 text-slate-700" > {skill} </span> ))} </div>
+          </>  )}
+        
+        </CardContent>
+      </Card>
+      <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
+        <CardContent className="p-7">
+          <h3 className="text-2xl font-black"> Expected improvement after optimization</h3>
+          <p className="text-slate-600 mt-2">  Score improvement:{" "} <span className="font-black text-emerald-600">  +{optimized?.score_improvement || 0} points </span> </p>
+
+              <div className="grid gap-3 mt-6">
+                {[
+                  ["Keyword match", optimizedBreakdown.keyword_match],
+                  ["Skills alignment", optimizedBreakdown.skills_alignment],
+                  ["Experience relevance", optimizedBreakdown.experience_relevance],
+                  ["Resume structure", optimizedBreakdown.resume_structure],
+                  ["ATS readability", optimizedBreakdown.ats_readability],
+                  ["Achievement quality", optimizedBreakdown.achievement_quality]
+                ].map(([label, value]) => (
+                  <ScoreBar key={label} label={label} value={value || 0}  note="Projected score after optimization"  />
+                ))}
+              </div>
+
+              {optimized?.keywords_added?.length > 0 && ( <>
+              <h4 className="font-black mt-6">Keywords added</h4>
+              <div className="flex flex-wrap gap-2 mt-3"> {optimized.keywords_added.map((keyword) => ( <span key={keyword} className="px-3 py-2 rounded-full text-xs font-black bg-emerald-50 text-emerald-700" > {keyword} </span> ))} </div>
+              </>)}
+        </CardContent>
+      </Card>
+      <BeforeAfter locked optimizedResume={optimizedResume}  originalResume ={originalResume} />
+      <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-slate-950 text-white">
+        <CardContent className="p-7">
+          <div className="flex items-center gap-2 font-black text-xl"><Icon name="lock"/> Unlock your optimized resume</div>
+          <p className="text-white/55 mt-2 text-sm leading-relaxed">Get the full rewritten resume, US-style cover letter, premium PDF, and before/after comparison.</p>
+          {token ?  (
+              analyseResult?.locked && ( <PremiumButton onClick={next} className="w-full mt-5">Unlock Full Resume — 1 Credit</PremiumButton>)
+          ) : (
+            <PremiumButton  onClick={() => { localStorage.setItem("redirect", "app" ); connectWithGoogle();}} className="w-full mt-5">Unlock Full Resume — $5</PremiumButton> 
+          )}
+          
+          <Button variant="outline" className="rounded-2xl mt-3 bg-transparent border-white/20 text-black hover:bg-white/10 w-full py-4" onClick={goMobile}>Continue on mobile app</Button>
+          {/* <Button onClick={restart} variant="outline" className="rounded-2xl mt-3 bg-transparent border-white/20 text-black hover:bg-white/10 w-full py-4">Optimize another resume</Button> */}
+
+        </CardContent>
+      </Card>
+    </div>
+  </div>
+</div>; }
+
+function BeforeAfter({ locked = false , optimizedResume, originalResume }) { 
+  const previewText = optimizedResume ?.split(" ") ?.slice(0, 40) ?.join(" ");
+  return <Card className="rounded-[2rem] shadow-sm border-slate-100 overflow-hidden bg-white"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">{locked ? "Before → After" :  "Before"} </h3>{locked && <span className="text-xs font-black bg-cyan-50 text-cyan-700 rounded-full px-3 py-2 flex items-center gap-1"><Icon name="lock" size={13}/> Locked preview</span>}</div><div className={`grid ${locked ? "md:grid-cols-2" : "md:grid-cols-1"}  gap-4 mt-5`} ><div className="rounded-3xl bg-slate-50 p-5 h-72 overflow-hidden"><p className="text-xs font-black uppercase tracking-widest text-slate-400 mb-3">Original</p><pre className="whitespace-pre-wrap text-xs leading-4 text-slate-600 font-sans">{originalResume}</pre></div>
+        {locked && <div className="relative rounded-3xl bg-slate-950 text-white p-5 h-72 overflow-hidden"> 
+          <p className="text-xs font-black uppercase tracking-widest text-cyan-300 mb-3">Optimized</p>
+          <pre className={`whitespace-pre-wrap text-xs leading-6 font-sans ${locked ? "blur-sm select-none" : ""}`}>{locked ? `${previewText}...` : optimizedResume}</pre>
+          {locked && <div className="absolute inset-0 bg-gradient-to-b from-transparent via-slate-950/55 to-slate-950 flex items-end justify-center pb-5"><span className="rounded-2xl px-4 py-3 text-sm font-black bg-white text-slate-950">Unlock to view full optimized version</span></div>}
+        </div>}
+      </div>
+    </CardContent>
+  </Card>; }
 
 function Paywall({ next }) { return <div className="max-w-4xl mx-auto py-12 px-4"><Card className="rounded-[2rem] shadow-2xl border-slate-100 overflow-hidden bg-white"><CardContent className="p-0"><div className="bg-slate-950 text-white p-8 text-center"><div className="h-16 w-16 mx-auto rounded-3xl text-white flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${COLORS.blue}, ${COLORS.teal})` }}><Icon name="lock" size={30}/></div><h2 className="text-4xl font-black mt-4">Unlock your job-ready resume</h2><p className="text-white/55 mt-3">One-time payment. No subscription required.</p></div><div className="p-8"><div className="text-center"><span className="text-6xl font-black">$5</span><span className="ml-2 text-slate-500">one-time</span></div><div className="grid sm:grid-cols-2 gap-3 mt-8">{["Full ATS-optimized resume", "US-style cover letter", "Premium PDF download", "Before/after comparison", "Missing keyword report", "Copy + download actions"].map((item) => <div key={item} className="flex items-center gap-2 rounded-2xl bg-slate-50 p-4 text-sm font-bold"><Icon name="check" size={18} className="text-cyan-500"/>{item}</div>)}</div><div className="rounded-3xl p-5 mt-8 bg-cyan-50"><h3 className="font-black">What changes after unlock?</h3><div className="grid md:grid-cols-4 gap-3 mt-4">{afterBreakdown.map((item) => <ScoreBar key={item.label} label={item.label} value={item.value}/>)}</div></div><PremiumButton onClick={next} className="w-full mt-8">Simulate Stripe payment & unlock</PremiumButton></div></CardContent></Card></div>; }
 
-function FinalResult({ restart, goMobile, onReview }) { const copyResume = async () => { try { await navigator.clipboard.writeText(optimizedResume); } catch (error) { console.warn("Clipboard unavailable in this preview environment", error); } }; const downloadResume = () => { const blob = new Blob([optimizedResume], { type: "text/plain;charset=utf-8" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "cvmatch-ai-optimized-resume.txt"; anchor.click(); URL.revokeObjectURL(url); setTimeout(onReview, 600); }; return <div className="max-w-7xl mx-auto py-10 px-4"><div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6"><div><p className="text-sm font-black uppercase tracking-widest text-cyan-500">Unlocked result</p><h2 className="text-4xl md:text-5xl font-black mt-2">Your optimized resume is ready.</h2><p className="mt-2 text-slate-600">Match score improved from <span className="font-black" style={{color: COLORS.warning}}>62%</span> to <span className="font-black" style={{color: COLORS.success}}>86%</span>.</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" className="rounded-2xl border-slate-200 px-4 py-3" onClick={copyResume}><Icon name="copy" size={16} className="mr-2"/>Copy</Button><PremiumButton onClick={downloadResume} className="px-4 py-3"><Icon name="download" size={16} className="mr-2"/>Download TXT</PremiumButton><PremiumButton onClick={downloadResume} variant="gold" className="px-4 py-3"><Icon name="file" size={16} className="mr-2"/>Download PDF</PremiumButton></div></div><div className="grid lg:grid-cols-[1fr_0.55fr] gap-6"><div className="space-y-6"><Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7"><h3 className="font-black text-2xl mb-5">Premium Resume PDF Preview</h3><div className="rounded-3xl border border-slate-200 bg-white p-8 shadow-inner"><pre className="whitespace-pre-wrap text-sm leading-7 font-sans text-slate-700">{optimizedResume}</pre></div></CardContent></Card><BeforeAfter locked={false}/></div><div className="space-y-6"><Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7"><h3 className="font-black text-2xl">New Score</h3><div className="text-7xl font-black mt-4" style={{ color: COLORS.success }}>86%</div><Progress value={86} color={COLORS.success}/><div className="grid gap-3 mt-6">{afterBreakdown.map((item) => <ScoreBar key={item.label} label={item.label} value={item.value}/>)}</div></CardContent></Card><Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7"><h3 className="font-black text-xl">Cover Letter</h3><pre className="text-sm text-slate-600 leading-7 mt-4 whitespace-pre-wrap font-sans">{coverLetter}</pre></CardContent></Card><Card className="rounded-[2rem] shadow-sm border-slate-100 bg-slate-950 text-white"><CardContent className="p-7"><div className="flex items-center gap-2 font-black text-xl"><Icon name="phone"/>Save this on mobile</div><p className="text-white/55 mt-2 text-sm leading-relaxed">Download the mobile app to keep resumes, track jobs, and optimize again faster.</p><div className="flex flex-col gap-3 mt-5"><AppStoreButton type="apple" onClick={goMobile}/><AppStoreButton type="google" onClick={goMobile}/></div></CardContent></Card><Button onClick={restart} variant="outline" className="w-full rounded-2xl py-6 border-slate-200">Optimize another resume</Button><PremiumButton onClick={goMobile} className="w-full">Download mobile app</PremiumButton></div></div></div>; }
+function FinalResult({ restart, goMobile, onReview }) { 
+  const { connectWithGoogle} = useAuth();
+
+  const [analyseResult, setAnalyseResult] = useState([]);
+  const token = localStorage.getItem("token");
+  const analysisId = localStorage.getItem("analysisId");
+
+
+  useEffect(() => {
+    const fetchPlans = async () => {
+      try {
+        const headers = { Accept: "application/json", };
+        if (token) {  headers.Authorization = `Bearer ${token}`;}
+        const res = await fetch(`https://api.cvmatchai.us/api/v1/analyses/${analysisId}`, {
+                            credentials: "include", 
+                            headers
+                          });
+        if ( res.status === 401 ) {
+          connectWithGoogle();
+          return;
+        }
+        const data = await res.json();
+        setAnalyseResult(data.data);
+      } catch (error) {
+        console.error("Error :", error);
+      }
+    };
+
+    fetchPlans();
+  }, []);
+  
+
+  const originalResume = analyseResult?.posted_resume ;
+  
+  const optimized = analyseResult?.optimized_resume_analysis;
+
+  const originalScore = analyseResult?.score || 0;
+  const optimizedScore = optimized?.overall_ats_score || 0;
+
+  const optimizedBreakdown = optimized?.scoring_breakdown || {};
+
+  const optimizedResume = analyseResult?.optimized_resume_text || "" ;
+  const coverLetter = analyseResult?.cover_letter || "" ;
+
+  const finalScoreBreakdown = [
+    {
+      label: "Keyword match",
+      value: optimizedBreakdown.keyword_match || 0
+    },
+    {
+      label: "Skills alignment",
+      value: optimizedBreakdown.skills_alignment || 0
+    },
+    {
+      label: "Experience relevance",
+      value: optimizedBreakdown.experience_relevance || 0
+    },
+    {
+      label: "Resume structure",
+      value: optimizedBreakdown.resume_structure || 0
+    },
+    {
+      label: "ATS readability",
+      value: optimizedBreakdown.ats_readability || 0
+    },
+    {
+      label: "Achievement quality",
+      value: optimizedBreakdown.achievement_quality || 0
+    }
+  ];
+
+  const copyResume = async () => { try { 
+    trackMeta("copyResumeText", { method: "google", location: "site_CVMatchApp" }, true);
+    await navigator.clipboard.writeText(optimizedResume); } catch (error) { console.warn("Clipboard unavailable in this preview environment", error); }
+  };
+  const downloadResumeText = () => { 
+    trackMeta("downloadResumeText", { method: "google", location: "site_CVMatchApp" }, true);
+    
+    const blob = new Blob([optimizedResume], { type: "text/plain;charset=utf-8" }); 
+    const url = URL.createObjectURL(blob); 
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = "cvmatch-ai-optimized-resume.txt"; anchor.click(); 
+    URL.revokeObjectURL(url); setTimeout(onReview, 600); 
+  }; 
+
+  const downloadResume = async () =>  { 
+    trackMeta("downloadResumePDF", { method: "google", location: "site_CVMatchApp" }, true);
+
+    const headers = { Accept: "application/json", };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    const response = await fetch(`https://api.cvmatchai.us/api/v1/analyses/${analyseResult?.id}/download/resume`, {
+      method: "GET",
+      credentials: "include", 
+      headers
+    });
+
+    if ( response.status === 401 ) {
+      connectWithGoogle();
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error("Failed to generate PDF");
+    }
+
+    const blob = await response.blob();
+
+    // const blob = new Blob([optimizedResume], { type: "text/plain;charset=utf-8" }); 
+    const url = URL.createObjectURL(blob); 
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = "cvmatch-ai-optimized-resume.pdf"; anchor.click();  anchor.remove();
+
+    URL.revokeObjectURL(url); setTimeout(onReview, 600); 
+  }; 
+
+  return <div className="max-w-7xl mx-auto py-10 px-4"><div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6"><div><p className="text-sm font-black uppercase tracking-widest text-cyan-500">Unlocked result</p><h2 className="text-4xl md:text-5xl font-black mt-2">Your optimized resume is ready.</h2><p className="mt-2 text-slate-600">Match score improved from{" "} <span className="font-black" style={{color: COLORS.warning}}>{analyseResult.score}%</span> to <span className="font-black" style={{color: COLORS.success}}>{optimizedScore}%</span>.</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" className="rounded-2xl border-slate-200 px-4 py-3" onClick={copyResume}><Icon name="copy" size={16} className="mr-2"/>Copy</Button><PremiumButton onClick={downloadResumeText} className="px-4 py-3"><Icon name="download" size={16} className="mr-2"/>Download TXT</PremiumButton><PremiumButton onClick={downloadResume} variant="gold" className="px-4 py-3"><Icon name="file" size={16} className="mr-2"/>Download PDF</PremiumButton></div></div>
+      <div className="grid lg:grid-cols-[1fr_0.55fr] gap-6">
+        <div className="space-y-6">
+          <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7"><h3 className="font-black text-2xl mb-5">Premium Resume PDF Preview</h3><div className="rounded-3xl border border-slate-200 bg-white p-8 shadow-inner"><pre className="whitespace-pre-wrap text-sm leading-5 font-sans text-slate-700">{optimizedResume}</pre></div></CardContent></Card>
+          <BeforeAfter locked={false} optimizedResume={optimizedResume}  originalResume ={originalResume}/>
+          
+          <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7"><h3 className="font-black text-xl">Cover Letter</h3><pre className="text-sm text-slate-600 leading-5 mt-4 whitespace-pre-wrap font-sans">{coverLetter}</pre></CardContent></Card>
+          
+        </div>
+        <div className="space-y-6">
+          <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
+            <CardContent className="p-7">
+              <h3 className="font-black text-2xl">New Score</h3>
+              <div className="text-7xl font-black mt-4" style={{ color: COLORS.success }}>{optimizedScore}%</div>
+              <Progress value={optimizedScore} color={COLORS.success}/>
+              <div className="grid gap-3 mt-6">{finalScoreBreakdown.map((item) => <ScoreBar key={item.label} label={item.label} value={item.value}/>)}</div>
+            </CardContent>
+          </Card>
+          {optimized?.improvements_made?.length > 0 && (
+            <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
+              <CardContent className="p-7">
+                <h3 className="font-black text-xl">Improvements made</h3>
+
+                <div className="mt-4 space-y-3">
+                  {optimized.improvements_made.map((item, index) => (
+                    <div
+                      key={index}
+                      className="rounded-2xl bg-emerald-50 text-emerald-800 px-4 py-3 text-sm font-bold"
+                    >
+                      {item}
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+            )}
+          {optimized?.keywords_added?.length > 0 && (
+            <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
+              <CardContent className="p-7">
+                <h3 className="font-black text-xl">Keywords added</h3>
+
+                <div className="flex flex-wrap gap-2 mt-4">
+                  {optimized.keywords_added.map((keyword) => (
+                    <span
+                      key={keyword}
+                      className="px-3 py-2 rounded-full text-xs font-black bg-cyan-50 text-cyan-700"
+                    >
+                      {keyword}
+                    </span>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          {optimized?.remaining_weaknesses?.length > 0 && (
+          <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
+            <CardContent className="p-7">
+              <h3 className="font-black text-xl">Remaining weaknesses</h3>
+
+              <div className="mt-4 space-y-3">
+                {optimized.remaining_weaknesses.map((item, index) => (
+                  <div
+                    key={index}
+                    className="rounded-2xl bg-orange-50 text-orange-900 px-4 py-3 text-sm font-bold"
+                  >
+                    {item}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+        {optimized?.recruiter_impression && (
+          <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
+            <CardContent className="p-7">
+              <h3 className="font-black text-xl">Recruiter impression</h3>
+
+              <p className="text-sm text-slate-600 leading-7 mt-4">
+                {optimized.recruiter_impression}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+         
+         
+          <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-slate-950 text-white"><CardContent className="p-7"><div className="flex items-center gap-2 font-black text-xl"><Icon name="phone"/>Save this on mobile</div><p className="text-white/55 mt-2 text-sm leading-relaxed">Download the mobile app to keep resumes, track jobs, and optimize again faster.</p><div className="flex flex-col gap-3 mt-5"><AppStoreButton type="apple" onClick={goMobile}/><AppStoreButton type="google" onClick={goMobile}/></div></CardContent></Card><Button onClick={restart} variant="outline" className="w-full rounded-2xl py-6 border-slate-200">Optimize another resume</Button><PremiumButton onClick={goMobile} className="w-full">Download mobile app</PremiumButton>
+        </div>
+      </div>
+    </div>;
+}
 
 function CVMatchApp() {
+  const pollIntervalRef = useRef(null);
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const {refreshUserFromGuestToken ,connectWithGoogle ,setMode} = useAuth();
 
   const [current, setCurrent] = useState(() => { return Number(localStorage.getItem("cvmatch_current")) || 0;});
 
+  const [resumeUploading, setResumeUploading] = useState(false);
   const [resumeFile, setResumeFile] = useState(null);
   const [resumeName, setResumeName] = useState(() => { return localStorage.getItem("cvmatch_resume_name") || "";});
   const [jobText, setJobText] = useState(() => { return localStorage.getItem("cvmatch_job_text") || "";});
   const [resumeId, setResumeId] = useState( localStorage.getItem("cvmatch_resume_id") || null);
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
-
+  
+  useEffect(() =>{  localStorage.removeItem("redirect");}, []);
   useEffect(() => { localStorage.setItem("cvmatch_current", current);}, [current]);
   useEffect(() => { localStorage.setItem("cvmatch_job_text", jobText);}, [jobText]);
   useEffect(() => { localStorage.setItem("cvmatch_resume_name", resumeName);}, [resumeName]);
@@ -552,10 +1160,12 @@ function CVMatchApp() {
   const next = React.useCallback(() => setCurrent((screen) => Math.min(screen + 1, 5)), []);
   const previous = () => {setCurrent((screen) => Math.max(screen - 1, 0));};
   const restart = () => { 
+    trackMeta("anotherGetFreeScore", { method: "google", location: "site_CVMatchApp" }, true);
     
     localStorage.removeItem("cvmatch_current");
+    localStorage.removeItem("cvmatch_resume_id");
     localStorage.removeItem("cvmatch_resume_name");
-    localStorage.removeItem("cvmatch_job_text");
+    localStorage.removeItem("analysisId");
 
     setCurrent(0);
     setResumeName("");
@@ -567,59 +1177,100 @@ function CVMatchApp() {
   const progress = useMemo(() => ((current + 1) / 6) * 100, [current]);
 
   const storeResume = async () => {
-
+    trackMeta("uploadResume", { method: "google", location: "site_CVMatchApp" }, true);
+    next(); 
     try {
-
+      setResumeUploading(true);
       const formData = new FormData();
       formData.append("name", resumeName);
-      
       if (resumeFile) { formData.append("media[]", resumeFile); }
 
-      const response = await fetch("http://api.cvmatchai.us/api/v1/resumes/upload", {
+      const guestToken = localStorage.getItem("guest_token");
+      const token = localStorage.getItem("token");
+
+      const url = token || guestToken
+      ? "https://api.cvmatchai.us/api/v1/resumes/upload"
+      : "https://api.cvmatchai.us/api/v1/resumes/visitor-upload";
+
+      const headers = { Accept: "application/json", };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      } else if (guestToken) {
+        headers["X-Guest-Token"] = guestToken;
+      }
+      const usingGuestToken = !token ;
+
+      const response = await fetch( url,{
         method: "POST",
         body: formData,
-        credentials: "include"
+        credentials: "include",
+        headers
       });
+
+      if ( response.status === 401 ) {
+        if (token)  connectWithGoogle();
+        previous();
+        return;
+      }
 
       const data = await response.json();
       console.log("ANALYSIS RESULT:", data);
+      if (usingGuestToken) {
+        const newGuestToken = response.headers.get("X-Guest-Token");
+        if (newGuestToken) {
+          localStorage.setItem("guest_token", newGuestToken);
+          console.log("i have guest token", newGuestToken);
+        }
+      }
+      await refreshUserFromGuestToken();
       const uploadedResumeId = data.data.id;
-      
-      setResumeId(uploadedResumeId);
-
-      // persist after refresh
-      localStorage.setItem( "cvmatch_resume_id", uploadedResumeId);
-
-      next();
-
+      if (uploadedResumeId) {
+        setResumeId(uploadedResumeId);
+        localStorage.setItem( "cvmatch_resume_id", uploadedResumeId);
+      }
     } catch (error) {
       console.error("upload error:", error);
+      previous();
+    } finally {
+      setResumeUploading(false);
     }
   };
 
   const analyzeResume = async () => {
-
+    trackMeta("uploadAnalyse", { method: "google", location: "site_CVMatchApp" }, true);
     try {
 
       const currentResumeId = resumeId || localStorage.getItem("cvmatch_resume_id");
-      // alert(currentResumeId) ;
+      const guestToken = localStorage.getItem("guest_token");
+      const token = localStorage.getItem("token");
 
+      const headers = { Accept: "application/json", };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      } else if (guestToken) {
+        headers["X-Guest-Token"] = guestToken;
+      }
+       
       const formData = new FormData();
       formData.append("job_description", jobText);
       if (currentResumeId) { formData.append("resume_id", currentResumeId); }
 
-      const response = await fetch("http://api.cvmatchai.us/api/v1/analyses", {
+      const response = await fetch("https://api.cvmatchai.us/api/v1/analyses", {
         method: "POST",
         body: formData,
-        credentials: "include"
+        credentials: "include",
+        headers
       });
 
+      if ( response.status === 401 ) {
+        if (token)  connectWithGoogle();
+        return;
+      }
       const data = await response.json();
-      console.log("ANALYSIS RESULT:", data);
       const analysisId = data.data.id;
-
+      localStorage.setItem('analysisId',analysisId)
+      await refreshUserFromGuestToken();
       next();
-
       // start polling
       pollAnalysisStatus(analysisId);
 
@@ -628,44 +1279,113 @@ function CVMatchApp() {
     }
   };
 
+  const unlockAnalysis = async () => {
+    trackMeta("unlockFullResume", { method: "google", location: "site_CVMatchApp" }, true);
+
+    try {
+
+      const analysisId = localStorage.getItem("analysisId");
+      const token = localStorage.getItem("token");
+      const headers = { Accept: "application/json", };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      } 
+       
+      const response = await fetch(`https://api.cvmatchai.us/api/v1/analyses/${analysisId}/unlock`, {
+        method: "GET",
+        credentials: "include",
+        headers
+      });
+      if ( response.status === 401 ) {
+        connectWithGoogle();
+        return;
+      }
+      const data = await response.json();
+
+      if (response.ok) {
+        await refreshUserFromGuestToken();
+        next() ;
+      }else{
+        setErrorMessage(
+          data?.message ||
+          "You don't have enough credits."
+        );
+        setShowErrorModal(true);
+
+        return;
+      }
+
+    } catch (error) {
+      console.error("Analysis error:", error);
+    }
+  };
+
   const pollAnalysisStatus = async (analysisId) => {
-    const interval = setInterval(async () => {
+    // STOP OLD POLLING BEFORE STARTING NEW ONE
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+    }
+
+    pollIntervalRef.current =  setInterval(async () => {
       try {
+        const guestToken = localStorage.getItem("guest_token");
+        const token = localStorage.getItem("token");
+        
+        const headers = { Accept: "application/json", };
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        } else if (guestToken) {
+          headers["X-Guest-Token"] = guestToken;
+        }
+       
         const response = await fetch(
-          `http://api.cvmatchai.us/api/v1/analyses/${analysisId}`,
+          `https://api.cvmatchai.us/api/v1/analyses/${analysisId}`,
           {
-            credentials: "include"
+            credentials: "include",
+            headers
           }
         );
+
+        if ( response.status === 401 ) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+          previous();
+          if (token)  connectWithGoogle();
+          return;
+        }
 
         const data = await response.json();
         console.log("POLL STATUS:", data.data.status);
 
         // FINISHED
         if (data.data.status === "completed") {
-          clearInterval(interval);
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
           console.log("Analysis completed");
           next();
         }
 
         // FAILED
         if (data.data.status === "failed") {
-          clearInterval(interval);
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
           console.log("Analysis failed");
         }
 
       } catch (error) {
-        clearInterval(interval);
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
         console.error("Polling error:", error);
       }
 
-    }, 2000); // every 2 sec
+    }, 10000); // every 2 sec
   };
 
+  
   return <div>
       <div className="max-w-7xl mx-auto px-4 pt-5">
         <Progress value={progress} color={COLORS.teal}/>
-        {current > 0 && (
+        {current > 0 && current < 3 && (
           <button
             onClick={previous}
             className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 font-bold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
@@ -679,89 +1399,233 @@ function CVMatchApp() {
         <AnimatePresence mode="wait">
           <motion.div key={current} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.28 }}>
             {current === 0 && <ResumeUpload next={storeResume} resumeName={resumeName} setResumeName={setResumeName}  resumeFile={resumeFile}  setResumeFile={setResumeFile}/>} 
-            {current === 1 && <JobDescription next={analyzeResume} jobText={jobText} setJobText={setJobText} />} 
+            {current === 1 && <JobDescription next={analyzeResume} jobText={jobText} setJobText={setJobText} resumeUploading={resumeUploading}/>} 
             {current === 2 && <Analysis/>} 
-            {current === 3 && <FreeResult next={next} goMobile={goMobile}/>} 
-            {current === 4 && <Paywall next={next}/>} 
-            {current === 5 && <FinalResult restart={restart} goMobile={goMobile} onReview={() => setReviewModalOpen(true)}/>}
+            {current === 3 && <FreeResult restart={restart} next={unlockAnalysis} goMobile={goMobile}/>} 
+            {current === 4 && <FinalResult restart={restart} goMobile={goMobile} onReview={() => setReviewModalOpen(true)}/>}
           </motion.div>
         </AnimatePresence>
       </main>
       <MobileComingSoonModal open={mobileModalOpen} onClose={() => setMobileModalOpen(false)}/>
-      <ReviewPromptModal open={reviewModalOpen} onClose={() => setReviewModalOpen(false)}/></div>;
+      <ReviewPromptModal open={reviewModalOpen} onClose={() => setReviewModalOpen(false)}/>
+      <AnimatePresence>{showErrorModal && (<motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4"><motion.div initial={{ scale: 0.9, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.9, opacity: 0 }} transition={{ duration: 0.2 }} className="w-full max-w-md rounded-3xl border border-white/10 bg-slate-950 p-8 shadow-2xl"><div className="flex justify-center"><div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-red-500/20 text-3xl">⚠️</div></div><h2 className="mt-6 text-center text-2xl font-black text-white">Unlock optimized resume Failed</h2><p className="mt-3 text-center text-slate-300">{errorMessage}</p><div className="mt-8 flex gap-3"><button onClick={()=>{localStorage.setItem("redirect","app") ; setShowErrorModal(false) ; setMode("landing"); setTimeout(()=>document.getElementById("pricing")?.scrollIntoView({behavior:"smooth"}),1000)}} className="flex-1 rounded-2xl bg-cyan-500 px-5 py-3 font-black text-white transition hover:scale-[1.02]">Buy More Credits</button><button onClick={() => setShowErrorModal(false)} className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-5 py-3 font-bold text-white">Close</button></div></motion.div></motion.div>)}</AnimatePresence>
+    </div>;
 }
 
-function routeToMode() {
-  if (window.location.pathname === "/dashboard") return "dashboard";
-  if (window.location.pathname === "/app") return "app";
-  return "landing";
-}
 
 function CreditStat({title,value}) {
   return <div className="rounded-[2rem] bg-white p-7 shadow-xl"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700 font-black">◆</div><p className="mt-6 text-sm font-black text-slate-500">{title}</p><div className="mt-2 text-6xl font-black">{value}</div><p className="mt-2 text-slate-500">Resume credits</p></div>;
 }
 
-function Dashboard({ total, used, remaining, setMode }) {
+function Dashboard() {
+
+  const {
+    user,
+    credits,
+    refreshUserFromGuestToken,
+    setMode
+  } = useAuth();
+
   const token = localStorage.getItem("token");
-  const history = [
-    {
-      label: "Starter Pack",
-      detail: "+5 credits purchased"
-    },
-    {
-      label: "Resume Optimization",
-      detail: "-1 credit used"
-    }
-  ];
+  const history =  user.transactions;
+  
   return <main className="mx-auto max-w-7xl px-4 py-12"><p className="text-sm font-black uppercase tracking-[.24em] text-cyan-500">Account dashboard</p><h1 className="mt-2 text-4xl md:text-6xl font-black">My Resume Credits</h1><p className="mt-3 text-slate-600">{token ? "You are connected." : "Prototype mode: connect with Google to sync credits."}</p>
     <div className="mt-8 grid gap-5 md:grid-cols-3">
-      <CreditStat title="Total purchased" value={total}/><CreditStat title="Credits used" value={used}/><CreditStat title="Remaining balance" value={remaining}/>
+      <CreditStat title="Total purchased" value={credits?.total ?? 0}/><CreditStat title="Credits used" value={credits?.used ?? 0}/><CreditStat title="Remaining balance" value={credits?.remaining ?? 0}/>
+    </div>
+    <div className="mt-8 rounded-[2rem] bg-white p-6 shadow-xl flex items-center justify-between">
+      <div>
+        <p className="text-sm font-black text-slate-500">Activity overview</p>
+        <h2 className="text-2xl font-black">Your usage stats</h2>
+      </div>
+
+      <div className="flex gap-10 text-center">
+        <div>
+          <p className="text-sm text-slate-500">Resumes uploaded</p>
+          <p className="text-4xl font-black text-cyan-600">{user.resumes_count ?? 0}</p>
+        </div>
+
+        <div>
+          <p className="text-sm text-slate-500">Analyses generated</p>
+          <p className="text-4xl font-black text-blue-600">{user.analyses_count ?? 0}</p>
+        </div>
+      </div>
     </div>
     <div className="mt-8 grid gap-6 lg:grid-cols-[1fr_.7fr]">
-      <div className="rounded-[2rem] bg-white p-7 shadow-xl"><h2 className="text-2xl font-black">Credit history</h2><div className="mt-6 space-y-3">{history.map((h,i)=><div key={i} className="rounded-2xl bg-slate-50 p-4"><p className="font-black">{h.label}</p><p className="text-sm text-slate-500">{h.detail}</p></div>)}</div></div>
-      <div className="rounded-[2rem] bg-slate-950 p-7 text-white shadow-xl"><h2 className="text-2xl font-black">Ready to optimize?</h2><p className="mt-2 text-white/55">Each unlocked resume consumes 1 credit. You have <b className="text-cyan-300">{remaining}</b> credits left.</p><div className="mt-6 rounded-3xl bg-white/5 p-5"><p className="text-white/50">Usage rule</p><p className="text-3xl font-black">1 resume = 1 credit</p></div><PremiumButton onClick={()=>go("app", setMode)} className="mt-6 w-full">Optimize a resume</PremiumButton><button onClick={()=>{go("landing", setMode); setTimeout(()=>document.getElementById("pricing")?.scrollIntoView({behavior:"smooth"}),80)}} className="mt-3 w-full rounded-2xl border border-white/20 py-4 font-black">Buy more credits</button></div>
+      {/* <div className="rounded-[2rem] bg-white p-7 shadow-xl"><h2 className="text-2xl font-black">Credit history</h2><div className="mt-6 space-y-3">{history.map((h,i)=><div key={i} className="rounded-2xl bg-slate-50 p-4"><p className="font-black">{h.label}</p><p className="text-sm text-slate-500">{h.detail}</p></div>)}</div></div> */}
+      <div className="rounded-[2rem] bg-white p-7 shadow-xl">
+        <h2 className="text-2xl font-black">Credit history</h2>
+
+        {history.length > 0 ? (
+          <div className="mt-6 space-y-3">
+            {history.map((h, i) => (
+              <div
+                key={i}
+                className="rounded-2xl bg-slate-50 p-4 transition hover:bg-slate-100"
+              >
+                <p className="font-black">{h.label}</p>
+                <p className="text-sm text-slate-500">{h.detail}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-6 flex flex-col items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-slate-50 px-6 py-12 text-center">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-white shadow">
+              <span className="text-3xl">🪙</span>
+            </div>
+
+            <h3 className="text-lg font-bold text-slate-800">
+              No credit activity yet
+            </h3>
+
+            <p className="mt-2 max-w-sm text-sm text-slate-500">
+              Your purchases, credit usage, refunds, and bonuses will appear here once
+              you start using credits.
+            </p>
+          </div>
+        )}
+      </div>
+      <div className="rounded-[2rem] bg-slate-950 p-7 text-white shadow-xl"><h2 className="text-2xl font-black">Ready to optimize?</h2><p className="mt-2 text-white/55">Each unlocked resume consumes 1 credit. You have <b className="text-cyan-300">{credits?.remaining ?? 0}</b> credits left.</p><div className="mt-6 rounded-3xl bg-white/5 p-5"><p className="text-white/50">Usage rule</p><p className="text-3xl font-black">1 resume = 1 credit</p></div><PremiumButton onClick={()=>go("app", setMode)} className="mt-6 w-full">Optimize a resume</PremiumButton><button onClick={()=>{localStorage.setItem("redirect","app") ;  setMode("landing"); setTimeout(()=>document.getElementById("pricing")?.scrollIntoView({behavior:"smooth"}),1000)}}  className="mt-3 w-full rounded-2xl border border-white/20 py-4 font-black">Buy more credits</button></div>
     </div>
   </main>;
 }
 
-function AppFlow({ remaining }) {
+function AppFlow({ credit }) {
   const [step,setStep]=useState(0);
   const [resume,setResume]=useState("");
   const [job,setJob]=useState("We are looking for a Project Coordinator with strong stakeholder communication, project management, CRM, data analysis, reporting and process improvement skills.");
   return <main className="mx-auto max-w-7xl px-4 py-10"><Progress value={(step+1)/6*100}/><AnimatePresence mode="wait">
     <motion.div key={step} initial={{opacity:0,y:16}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-16}}>
-      {step===0&&<Upload resume={resume} setResume={setResume} next={()=>setStep(1)}/>} {step===1&&<Job job={job} setJob={setJob} next={()=>setStep(2)}/>} {step===2&&<Analyzing next={()=>setStep(3)}/>} {step===3&&<FreeResult next={()=>setStep(4)}/>} {step===4&&<Paywall remaining={remaining} next={()=>setStep(5)}/>} {step===5&&<FinalResult restart={()=>{setStep(0); setResume("");}}/>}
+      {step===0&&<Upload resume={resume} setResume={setResume} next={()=>setStep(1)}/>} {step===1&&<Job job={job} setJob={setJob} next={()=>setStep(2)}/>} {step===2&&<Analyzing next={()=>setStep(3)}/>} {step===3&&<FreeResult next={()=>setStep(4)}/>} {step===4&&<Paywall credit={credit} next={()=>setStep(5)}/>} {step===5&&<FinalResult restart={()=>{setStep(0); setResume("");}}/>}
     </motion.div>
   </AnimatePresence></main>;
 }
 
+function AuthCallback({pathname}) {
+  const {
+    setMode,
+    refreshUserFromGuestToken
+  } = useAuth();
 
-export default function App() {
-  if (window.location.pathname === "/auth/callback") return <AuthCallback />;
-
-  const [mode, setMode] = useState(routeToMode());
-  // const [mode, setMode] = useState("landing");
-  const startApp = () => setMode("app");
-  // const startApp = () => go("app", setMode);
-  // const goHome = () => setMode("landing");
-  const goHome = () => go("landing", setMode);
-  const total=5, used=2, remaining=total-used;
-
+  const [status, setStatus] = useState( "Connecting your account..." );
+  const sleep = (ms) =>  new Promise((resolve) => setTimeout(resolve, ms));
+  
 
   useEffect(() => {
-    const onPopState = () => setMode(routeToMode());
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
+    async function handleAuth() {
+      try {
+        if (pathname === "/auth/callback"){
+          setStatus("Connecting your account...");
+          await sleep(1200);
+
+          setStatus("Verifying Google authentication...");
+          await sleep(1800);
+        }
+
+        const token = new URLSearchParams( window.location.search ).get("token");
+        if (!token) {
+          console.error("No token found");
+          window.location.replace("/");
+          return;
+        }
+
+        localStorage.setItem("token", token);
+        await refreshUserFromGuestToken();
+
+        setStatus("Loading your dashboard...");
+        await sleep(1200);
+
+        if (pathname === "/auth/callback"){
+          setStatus("Authentication successful");
+          await sleep(1500);
+        }
+
+      } catch (error) {
+        console.error("Auth callback error:", error);
+        if (pathname === "/auth/callback"){
+          setStatus("Authentication failed");
+        }
+        if (pathname === "/payement/callback"){
+          setStatus("Paiement failed");
+        }
+        await sleep(2500);
+      }
+      window.location.replace("/");
+    };
+
+    handleAuth();
+
   }, []);
 
-  return <div className="min-h-screen text-slate-950" style={{ background: COLORS.cream }}><Header onStart={startApp}  setMode={setMode} onHome={goHome}/>
-      <AnimatePresence mode="wait">
-        {/* <motion.div key={mode} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.25 }}>{mode === "landing" ? <LandingPage onStart={startApp} /> : <CVMatchApp/>}</motion.div> */}
-        <motion.div key={mode} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.25 }}>{mode === "landing" && ( <LandingPage onStart={startApp} setMode={setMode} /> )} {mode === "app" && (<CVMatchApp /> )} {mode === "dashboard" && (<Dashboard total={total} used={used} remaining={remaining} setMode={setMode} /> )}</motion.div>
-      </AnimatePresence>
-      <footer className="border-t border-slate-200 bg-white/60 py-8">
-        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-4 text-sm text-slate-500 md:flex-row"><Logo /><span>© 2026 CVMatch AI. Integrated landing + app prototype.</span></div>
-      </footer>
+  
+  return (<div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 px-4"><div className="absolute inset-0 overflow-hidden"><div className="absolute left-[-10%] top-[-10%] h-80 w-80 rounded-full bg-cyan-500/20 blur-3xl" /><div className="absolute bottom-[-10%] right-[-10%] h-80 w-80 rounded-full bg-blue-500/20 blur-3xl" /><motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 20, ease: "linear" }} className="absolute left-1/2 top-1/2 h-[700px] w-[700px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/5" /></div><motion.div initial={{ opacity: 0, scale: 0.92, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} transition={{ duration: 0.5 }} className="relative w-full max-w-md rounded-3xl border border-white/10 bg-white/10 p-10 backdrop-blur-2xl shadow-2xl"><div className="flex justify-center"><motion.div animate={{ boxShadow: ["0 0 20px rgba(6,182,212,.3)", "0 0 60px rgba(6,182,212,.6)", "0 0 20px rgba(6,182,212,.3)"] }} transition={{ repeat: Infinity, duration: 2 }} className="flex h-24 w-24 items-center justify-center rounded-3xl bg-cyan-500 text-4xl font-black text-white">CV</motion.div></div><div className="mt-8 text-center"><h1 className="text-3xl font-black text-white">CVMatch AI</h1><p className="mt-3 text-slate-300">Secure authentication in progress</p></div><div className="mt-10 flex justify-center"><motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="h-14 w-14 rounded-full border-4 border-white/10 border-t-cyan-400" /></div><AnimatePresence mode="wait"><motion.p key={status} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.25 }} className="mt-8 text-center text-sm font-medium text-slate-300">{status}</motion.p></AnimatePresence><div className="mt-8 overflow-hidden rounded-full bg-white/10"><motion.div initial={{ width: "0%" }} animate={{ width: "100%" }} transition={{ duration: 5, ease: "easeInOut" }} className="h-2 rounded-full bg-cyan-400" /></div><p className="mt-8 text-center text-xs text-slate-500">Preparing your AI workspace...</p></motion.div></div>);
+}
+
+
+function App() {
+  
+  const {
+    mode,
+    setMode,
+    user,
+    credits,
+  } = useAuth();
+  const location = useLocation();
+  const startApp = () =>{ trackMeta("getFreeScore", { method: "google", location: "site_header_or_landing" }, true); go("app", setMode);}
+  const goHome = () => go("landing", setMode);
+  const total=5, used=2, credit=total-used;
+
+
+
+  const pathname = location.pathname;
+  const redirect = localStorage.getItem("redirect");
+
+  useEffect(() => {
+    if (pathname === "/auth/callback") { setMode("callback");}
+    if (pathname === "/payement/callback") { trackMeta("redirectFromPaymentPage", { method: "google", location: "site_CVMatchApp" }, true); setMode("callback");}
+    if (pathname !== "/auth/callback" && pathname !== "/payement/callback" && redirect) { setMode(redirect);}
+    if (pathname === "#proof") {setMode("landing"); setTimeout(()=>document.getElementById("proof")?.scrollIntoView({behavior:"smooth"}),500)}
+    if (pathname === "#how") {setMode("landing"); setTimeout(()=>document.getElementById("how")?.scrollIntoView({behavior:"smooth"}),500)}
+    if (pathname === "#pricing") {setMode("landing"); setTimeout(()=>document.getElementById("pricing")?.scrollIntoView({behavior:"smooth"}),500)}
+    if (pathname === "#mobile") {setMode("landing"); setTimeout(()=>document.getElementById("mobile")?.scrollIntoView({behavior:"smooth"}),500)}
+  }, [pathname]);
+
+
+  return <div className="min-h-screen text-slate-950" style={{ background: COLORS.cream }}>
+      {mode === "callback" && ( <AuthCallback  pathname={pathname}/>)}
+      {mode !== "callback" && ( <>
+        { (pathname !== "/terms" && pathname !== "/privacy" && pathname !== "/refund")?  
+        <Header onStart={startApp}  user={user} credits={credits}   setMode={setMode} onHome={goHome}/>
+        :
+        <HeaderX onStart={startApp}  user={user} credits={credits}   setMode={setMode} onHome={goHome}/>
+        } 
+        <Routes>
+        {/* pages légales */}
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/refund" element={<RefundPage />} />
+
+          {/* app principale (fallback logique mode) */}
+          <Route  path="/*" element={
+            <AnimatePresence mode="wait">
+              <motion.div key={mode} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.25 }}>{mode === "landing" && ( <LandingPage onStart={startApp} setMode={setMode} /> )} {mode === "app" && (<CVMatchApp /> )} {mode === "dashboard" && (<Dashboard user={user} credits={credits} setMode={setMode} /> )}</motion.div>
+            </AnimatePresence>
+            }
+          />
+        </Routes>
+        <footer className="border-t border-slate-200 bg-white/60 py-8">
+          <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-4 text-sm text-slate-500 md:flex-row">
+            <Logo />
+            <div className="flex flex-wrap items-center gap-5 font-medium">
+              <Link to="/terms" className="hover:text-cyan-600 transition-colors">Terms </Link>
+              <Link to="/privacy" className="hover:text-cyan-600 transition-colors">Privacy</Link>
+              <Link to="/refund" className="hover:text-cyan-600 transition-colors">Refund</Link>
+            </div>
+            <span>© 2026 CVMatch AI | contact@cvmatchai.us</span>
+          </div>
+        </footer>
+      </>
+      )}
     </div>;
   
 }
