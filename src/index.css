@@ -24,3 +24,11 @@ button {
 button:disabled {
   cursor: not-allowed;
 }
+
+.footer-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
+.footer-links button { border: 0; background: transparent; color: rgba(255,255,255,.6); font-weight: 800; }
+.footer-links button:hover { color: #67e8f9; }
+.consent-box { display: flex; gap: 16px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 24px; padding: 20px;  }
+.consent-icon { width: 42px; height: 42px; border-radius: 14px; background: white; display: grid; place-items: center; color: #c2410c; flex: 0 0 auto; }
+.consent-box h3 { margin: 0; font-size: 19px; }
+.consent-box p { margin: 8px 0 0; color: #7c2d12; line-height: 1.7; }

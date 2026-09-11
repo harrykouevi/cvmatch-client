@@ -87,288 +87,50 @@ export default function AppWrapper() {
 }
 
 function getScoreColor(score) {
-  const value = toScoreNumber(score);
-  if (value === null) return COLORS.textMuted;
-  if (value < 60) return COLORS.danger;
-  if (value < 75) return COLORS.warning;
+  if (score < 60) return COLORS.danger;
+  if (score < 75) return COLORS.warning;
   return COLORS.success;
 }
 
-const RESTORE_ANALYSIS_ERROR = "Unable to restore this analysis. Please run the scan again.";
-const FULL_GENERATION_ERROR = "We could not generate your optimized resume package. Please try again. Your credit will not be charged again.";
-const FULL_GENERATION_TIMEOUT_MESSAGE = "Your resume package is still being generated. Please refresh this page in a moment.";
-const FULL_GENERATION_POLL_INTERVAL_MS = 4000;
-const FULL_GENERATION_TIMEOUT_MS = 180000;
-const PENDING_UNLOCK_KEY = "cvmatch_pending_unlock_after_login";
-const PENDING_UNLOCK_ANALYSIS_KEY = "cvmatch_pending_unlock_analysis_id";
-const GUEST_FREE_SCAN_USED_KEY = "cvmatch_guest_free_scan_used";
-const GUEST_FREE_SCAN_ANALYSIS_KEY = "cvmatch_guest_free_scan_analysis_id";
-const AUTH_FREE_SCAN_LIMIT_MESSAGE = "You have used your free resume scan. Unlock the full optimization package to continue.";
-const GUEST_FREE_SCAN_LIMIT_MESSAGE = "You have used your free resume scan. Continue with Google or unlock the full optimization package to continue.";
+const trackGoogleLoginStartedFromPaywall = () => {
+  if (typeof window === "undefined") return;
+  const startedKey = "cvmatch_google_login_started";
+  let alreadyStarted = false;
+  try { alreadyStarted = !!window.sessionStorage.getItem(startedKey); } catch (e) { /* storage unavailable */ }
+  if (!alreadyStarted) {
+    trackMeta("google_login_started", { location: "post_analysis_paywall", funnel_step: "google_login_started" }, true);
+    try { window.sessionStorage.setItem(startedKey, "1"); } catch (e) { /* storage unavailable */ }
+  }
+};
 
-function toScoreNumber(value) {
-  const score = Number(value);
-  return Number.isFinite(score) ? score : null;
-}
-
-function formatScore(value) {
-  const score = toScoreNumber(value);
-  return score === null ? "N/A" : `${score}%`;
-}
-
-function safeTrackMeta(eventName, params = {}, isCustom = true) {
+const trackGoogleLoginCompletedFromPaywall = () => {
+  if (typeof window === "undefined") return;
+  const startedKey = "cvmatch_google_login_started";
+  const completedKey = "cvmatch_google_login_completed";
+  let started = false;
+  let completed = false;
   try {
-    trackMeta(eventName, params, isCustom);
-  } catch (error) {
-    console.warn(error);
+    started = !!window.sessionStorage.getItem(startedKey);
+    completed = !!window.sessionStorage.getItem(completedKey);
+  } catch (e) {
+    /* storage unavailable */
   }
-}
-
-function getStoredAnalysisId() {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("history_analysisId") || window.localStorage.getItem("analysisId") || window.sessionStorage.getItem(PENDING_UNLOCK_ANALYSIS_KEY);
-}
-
-function persistAnalysisIdForUnlock(analysisId) {
-  if (typeof window === "undefined" || !analysisId) return;
-  window.localStorage.setItem("analysisId", analysisId);
-  window.localStorage.setItem("redirect", "app");
-  window.localStorage.setItem("cvmatch_current", "3");
-  window.sessionStorage.setItem(PENDING_UNLOCK_ANALYSIS_KEY, analysisId);
-}
-
-function getCreditRemaining(account) {
-  const explicit = Number(account?.credits?.remaining);
-  if (Number.isFinite(explicit)) return explicit;
-  const total = Number(account?.credits?.total);
-  const used = Number(account?.credits?.used);
-  if (Number.isFinite(total) && Number.isFinite(used)) return Math.max(total - used, 0);
-  return 0;
-}
-
-function buildAppAuthHeaders() {
-  const headers = { Accept: "application/json" };
-  const token = typeof window !== "undefined" ? window.localStorage.getItem("token") : null;
-  const guestToken = typeof window !== "undefined" ? window.localStorage.getItem("guest_token") : null;
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  } else if (guestToken) {
-    headers["X-Guest-Token"] = guestToken;
+  if (started && !completed) {
+    trackMeta("google_login_completed", { location: "post_analysis_paywall", funnel_step: "google_login_completed", status: "authenticated" }, true);
+    try { window.sessionStorage.setItem(completedKey, "1"); } catch (e) { /* storage unavailable */ }
   }
-  return headers;
-}
+};
 
-function getStripeSessionId(payload) {
-  const data = payload?.data || payload || {};
-  return data.session_id || data.sessionId || data.id || payload?.session_id || null;
-}
-
-function apiData(payload) {
-  return payload?.data || payload || {};
-}
-
-function payloadAnalysisId(payload, fallback = null) {
-  const data = apiData(payload);
-  return data.analysis_id || data.id || payload?.analysis_id || fallback;
-}
-
-function isFullGenerationProcessing(payload) {
-  const data = apiData(payload);
-  return data.status === "processing"
-    || data.status === "queued"
-    || data.full_generation_status === "queued"
-    || data.full_generation_status === "processing";
-}
-
-function isFullGenerationFailed(payload) {
-  const data = apiData(payload);
-  return data.status === "failed" || data.full_generation_status === "failed";
-}
-
-function isFullGenerationComplete(payload) {
-  const data = apiData(payload);
-  return data.is_full_unlocked === true
-    || data.full_generation_status === "completed"
-    || (data.locked === false && Boolean(data.optimized_resume_text || data.cover_letter || data.optimized_resume));
-}
-
-function trackAnalysisEventOnce(eventName, analysisId, params = {}) {
-  if (typeof window === "undefined" || !analysisId) return;
-  const key = `cvmatch_${eventName}_${analysisId}`;
-  if (window.sessionStorage.getItem(key)) return;
-  safeTrackMeta(eventName, params, true);
-  window.sessionStorage.setItem(key, "1");
-}
-
-function getPricingConfig(payload) {
-  return payload?.meta?.pricing_config || payload?.pricing_config || null;
-}
-
-function formatCurrencyValue(value) {
-  const amount = Number(value);
-  return Number.isFinite(amount) ? `$${amount.toFixed(2)}` : null;
-}
-
-function getPlanPricingDisplay(plan, pricingConfig) {
-  const regularPrice = plan?.price || formatCurrencyValue(pricingConfig?.base_single_price);
-  const isSingleUnlock = Number(plan?.credits) === 1;
-  const promoPrice = pricingConfig?.promo_enabled && isSingleUnlock
-    ? formatCurrencyValue(pricingConfig?.promo_price)
-    : null;
-
-  return {
-    price: promoPrice || regularPrice,
-    regularPrice,
-    promoEnabled: Boolean(promoPrice),
-    promoLabel: pricingConfig?.promo_label,
-    expiredMessage: pricingConfig?.promo_expired ? pricingConfig?.promo_expired_message : null,
-  };
-}
-
-function parseOptimizedResume(value) {
-  if (!value) return null;
-  if (typeof value === "object") return value;
-  try {
-    return JSON.parse(value);
-  } catch (error) {
-    return null;
+const trackResumeUnlocked = (analysisId) => {
+  if (typeof window === "undefined") return;
+  const unlockKey = analysisId ? `cvmatch_resume_unlocked_${analysisId}` : "cvmatch_resume_unlocked_session";
+  let alreadyUnlocked = false;
+  try { alreadyUnlocked = !!window.sessionStorage.getItem(unlockKey); } catch (e) { /* storage unavailable */ }
+  if (!alreadyUnlocked) {
+    trackMeta("resume_unlocked", { location: "post_analysis_result", funnel_step: "resume_unlocked", credit_used: true, analysis_id: analysisId }, true);
+    try { window.sessionStorage.setItem(unlockKey, "1"); } catch (e) { /* storage unavailable */ }
   }
-}
-
-function cleanDownloadText(value) {
-  return String(value || "")
-    .replace(/<[^>]*>/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/[\u2022\u25aa\u25e6\u2023\u2013\u2014]/g, "-")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function textList(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.map((item) => cleanDownloadText(typeof item === "object" ? Object.values(item).filter(Boolean).join(" ") : item)).filter(Boolean);
-  const raw = String(value);
-  return raw.split(raw.includes("|") ? "|" : ",").map((item) => cleanDownloadText(item)).filter(Boolean);
-}
-
-function bulletList(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.map((item) => cleanDownloadText(typeof item === "object" ? Object.values(item).filter(Boolean).join(" ") : item)).filter(Boolean);
-  const raw = String(value);
-  if (raw.includes("|")) return raw.split("|").map((item) => cleanDownloadText(item)).filter(Boolean);
-  if (raw.includes("\n")) return raw.split("\n").map((item) => cleanDownloadText(item)).filter(Boolean);
-  return [cleanDownloadText(raw)].filter(Boolean);
-}
-
-function resumeDate(value) {
-  if (!value) return "";
-  if (typeof value === "object") return [value.start, value.end].filter(Boolean).join(" - ");
-  return cleanDownloadText(value);
-}
-
-function addTxtSection(lines, title) {
-  if (lines.length && lines[lines.length - 1] !== "") lines.push("");
-  lines.push(title.toUpperCase());
-}
-
-function findResumeSection(resume, keys, fallback) {
-  const wanted = Array.isArray(keys) ? keys : [keys];
-  const section = resume?.sections?.find((item) => wanted.includes(item?.section_key));
-  return section?.data ?? fallback;
-}
-
-function buildResumeDownloadText(result) {
-  const resume = parseOptimizedResume(result?.optimized_resume);
-  if (!resume) return cleanDownloadText(result?.optimized_resume_text);
-
-  const lines = [];
-  const contact = findResumeSection(resume, "contact", resume.contact || {});
-  const contacts = [contact.location, contact.phone, contact.email, contact.linkedin, contact.portfolio, contact.website].filter(Boolean);
-  if (resume.full_name) lines.push(cleanDownloadText(resume.full_name));
-  if (resume.headline) lines.push(cleanDownloadText(resume.headline));
-  if (contacts.length) lines.push(contacts.map(cleanDownloadText).join(" | "));
-
-  const summary = findResumeSection(resume, "professional_summary", resume.professional_summary);
-  const summaryText = typeof summary === "object" ? cleanDownloadText(summary.text || Object.values(summary).filter(Boolean).join(" ")) : cleanDownloadText(summary);
-  if (summaryText) {
-    addTxtSection(lines, "Professional Summary");
-    lines.push(summaryText);
-  }
-
-  const skills = findResumeSection(resume, ["skills", "technical_competencies"], resume.skills);
-  if (skills) {
-    addTxtSection(lines, "Core Skills");
-    if (Array.isArray(skills)) {
-      lines.push(`Skills: ${textList(skills).join(", ")}`);
-    } else {
-      Object.entries(skills).forEach(([label, items]) => {
-        const groupItems = items?.skills || items?.items || items;
-        const values = textList(groupItems);
-        if (values.length) lines.push(`${label.replace(/_/g, " ")}: ${values.join(", ")}`);
-      });
-    }
-  }
-
-  const experience = findResumeSection(resume, ["professional_experience", "work_experience", "research_experience"], resume.professional_experience || []);
-  if (Array.isArray(experience) && experience.length) {
-    addTxtSection(lines, "Professional Experience");
-    experience.forEach((job) => {
-      const heading = [job.title, job.company || job.institution, job.location].filter(Boolean).map(cleanDownloadText).join(" | ");
-      if (heading) lines.push(heading);
-      const dates = resumeDate(job.dates || job.date);
-      if (dates) lines.push(dates);
-      if (job.description) lines.push(cleanDownloadText(job.description));
-      bulletList(job.bullets).forEach((bullet) => lines.push(`- ${bullet}`));
-      const tech = textList(job.technologies);
-      if (tech.length) lines.push(`Technologies: ${tech.join(", ")}`);
-      lines.push("");
-    });
-  }
-
-  const education = findResumeSection(resume, "education", resume.education || []);
-  if (Array.isArray(education) && education.length) {
-    addTxtSection(lines, "Education");
-    education.forEach((item) => {
-      const line = [item.degree, item.institution, item.location, resumeDate(item.date || item.dates)].filter(Boolean).map(cleanDownloadText).join(" | ");
-      if (line) lines.push(line);
-    });
-  }
-
-  const certifications = findResumeSection(resume, ["certifications", "licenses"], resume.certifications || []);
-  if (Array.isArray(certifications) && certifications.length) {
-    addTxtSection(lines, "Certifications");
-    certifications.forEach((item) => {
-      const line = [item.name || item.license_name, item.issuer || item.state_or_region, item.date, item.expiration].filter(Boolean).map(cleanDownloadText).join(" | ");
-      if (line) lines.push(line);
-    });
-  }
-
-  const projects = findResumeSection(resume, ["projects", "portfolio_highlights"], resume.projects || []);
-  if (Array.isArray(projects) && projects.length) {
-    addTxtSection(lines, "Projects");
-    projects.forEach((project) => {
-      const title = cleanDownloadText(project.name || project.title);
-      if (title) lines.push(title);
-      if (project.description) lines.push(cleanDownloadText(project.description));
-      const tech = textList(project.technologies);
-      if (tech.length) lines.push(`Technologies: ${tech.join(", ")}`);
-      lines.push("");
-    });
-  }
-
-  const languages = findResumeSection(resume, "languages", resume.languages || []);
-  if (Array.isArray(languages) && languages.length) {
-    addTxtSection(lines, "Languages");
-    languages.forEach((item) => {
-      const line = typeof item === "object" ? [item.language, item.level].filter(Boolean).map(cleanDownloadText).join(" - ") : cleanDownloadText(item);
-      if (line) lines.push(line);
-    });
-  }
-
-  return cleanDownloadText(lines.join("\n"));
-}
+};
 
 
 function Button({ children, onClick, className = "", variant = "solid", disabled = false }) {
@@ -455,14 +217,11 @@ function go(mode, setMode) {
 
 
 function Progress({ value, color }) {
-  const score = toScoreNumber(value);
-  const width = score === null ? 0 : Math.max(0, Math.min(score, 100));
-  return <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100"><motion.div initial={{ width: 0 }} animate={{ width: `${width}%` }} transition={{ duration: 0.8 }} className="h-full rounded-full" style={{ background: color || getScoreColor(score) }} /></div>;
+  return <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100"><motion.div initial={{ width: 0 }} animate={{ width: `${value}%` }} transition={{ duration: 0.8 }} className="h-full rounded-full" style={{ background: color || getScoreColor(value) }} /></div>;
 }
 
 function ScoreBar({ label, value, note }) {
-  const score = toScoreNumber(value);
-  return <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-4"><div><p className="font-black text-sm">{label}</p>{note && <p className="mt-1 text-xs text-slate-500">{note}</p>}</div><span className="text-lg font-black" style={{ color: getScoreColor(score) }}>{formatScore(score)}</span></div><div className="mt-3"><Progress value={score}/></div></div>;
+  return <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-4"><div><p className="font-black text-sm">{label}</p>{note && <p className="mt-1 text-xs text-slate-500">{note}</p>}</div><span className="text-lg font-black" style={{ color: getScoreColor(value) }}>{value}%</span></div><div className="mt-3"><Progress value={value}/></div></div>;
 }
 
 function AppStoreButton({ type = "apple", onClick }) {
@@ -514,8 +273,8 @@ function MobileComingSoonModal({ open, onClose }) {
 
       const data = await response.json();
       onClose();
-    } catch {
-      console.error("Waitlist request failed.");
+    } catch (error) {
+      console.error("waitlist error:", error);
       setError("Something went wrong");
     } finally {
       setLoading(false);
@@ -535,7 +294,7 @@ function ReviewPromptModal({ open, onClose }) {
   return <div className="fixed inset-0 z-[100] bg-slate-950/60 backdrop-blur-sm flex items-center justify-center px-4"><motion.div initial={{ opacity: 0, scale: 0.94, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} className="w-full max-w-md rounded-[2rem] bg-white shadow-2xl p-7 text-center"><div className="h-16 w-16 mx-auto rounded-3xl text-white flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${COLORS.blue}, ${COLORS.teal})` }}><Icon name="star" size={28}/></div><h3 className="text-3xl font-black mt-4">How was your resume result?</h3><p className="text-slate-600 mt-2">Leave a quick rating after downloading. This helps us improve CVMatch AI.</p><div className="flex justify-center gap-2 mt-6">{[1,2,3,4,5].map((star) => <button key={star} onClick={() => setRating(star)} className="h-12 w-12 rounded-2xl flex items-center justify-center border transition-all" style={{ background: rating >= star ? COLORS.gold : "#FFFFFF", color: rating >= star ? COLORS.primary : COLORS.textMuted, borderColor: rating >= star ? COLORS.gold : "#E5E5E5" }}><Icon name="star" size={20}/></button>)}</div><textarea placeholder="Optional feedback..." className="w-full h-24 mt-5 rounded-3xl border border-slate-200 p-4 text-sm outline-none focus:ring-4 focus:ring-cyan-100 resize-none"/><PremiumButton onClick={onClose} className="w-full mt-5">Submit review</PremiumButton><Button onClick={onClose} variant="ghost" className="w-full rounded-2xl mt-2">Maybe later</Button></motion.div></div>;
 }
 
-function Header({ onStart, onHome, credits, lockedResultActive = false, onLockedResultCta}) {
+function Header({ onStart, onHome, credits, lockedResultActive = false}) {
    const {
     setMode,
     setUser,
@@ -546,55 +305,97 @@ function Header({ onStart, onHome, credits, lockedResultActive = false, onLocked
 
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
   const [open, setOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false); // mobile menu
+  
 
  
  
-  const headerCta = lockedResultActive
+  const headerCtaLabel = lockedResultActive
     ? ((credits?.remaining ?? 0) > 0 ? "Use Credit" : "Unlock Resume")
     : "Get free score";
 
-  const handleHeaderCta = () => {
-    if (lockedResultActive && onLockedResultCta) {
-      onLockedResultCta();
-      return;
-    }
-    onStart();
-  };
-
-  const handleGoogleCta = () => {
-    if (lockedResultActive && onLockedResultCta) {
-      onLockedResultCta();
-      return;
+  const handleGoogle = () => {
+    if (lockedResultActive && typeof trackGoogleLoginStartedFromPaywall === "function") {
+      trackGoogleLoginStartedFromPaywall();
     }
     connectWithGoogle();
   };
 
   return <header className="sticky top-0 z-50 border-b border-white/70 bg-white/80 backdrop-blur-xl">
-  <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4"><button onClick={onHome}><Logo /></button>
-  <nav className="hidden items-center gap-8 text-sm font-bold text-slate-500 lg:flex">
-    <a  href="/#proof"   className="hover:text-slate-950">Proof</a>
-    <a  href="/#how"   className="hover:text-slate-950">How it works</a>
-    <a  href="/#pricing"  className="hover:text-slate-950">Pricing</a>
-    <a  href="/#mobile" className="hover:text-slate-950">Mobile</a>
-  </nav>
-  {user && !user?.is_guest ? 
-    (<div className="relative">
-        <button onClick={() => setOpen(!open)} className="rounded-2xl border border-slate-200 bg-cyan-50 px-5 py-4 font-black" > {credits?.remaining ?? 0} Credits ▼ </button>
-        {open && (
-          <div className="absolute right-0 mt-2 w-48 rounded-xl border bg-white shadow-lg z-50">
-            <button onClick={() => { go("dashboard", setMode); setOpen(false); }} className="block w-full px-4 py-3 text-left hover:bg-gray-100" > Dashboard </button>
-            <button onClick={() => handleLogout()} className="block w-full px-4 py-3 text-left text-red-600 hover:bg-gray-100" > Logout </button>
+    <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4"><button onClick={onHome}><Logo /></button>
+    <nav className="hidden items-center gap-8 text-sm font-bold text-slate-500 lg:flex">
+      <a  href="/#proof"   className="hover:text-slate-950">Proof</a>
+      <a  href="/#how"   className="hover:text-slate-950">How it works</a>
+      <a  href="/#pricing"  className="hover:text-slate-950">Pricing</a>
+      <a  href="/#mobile" className="hover:text-slate-950">Mobile</a>
+    </nav>
+  
+    {/* Right side: desktop controls (unchanged) */}
+    <div className="hidden items-center gap-3 md:flex">
+      {user && !user?.is_guest ?
+        (<div className="relative">
+            <button onClick={() => setOpen(!open)} className="rounded-2xl border border-slate-200 bg-cyan-50 px-5 py-4 font-black" > {credits?.remaining ?? 0} Credits ▼ </button>
+            {open && (
+              <div className="absolute right-0 mt-2 w-48 rounded-xl border bg-white shadow-lg z-50">
+                <button onClick={() => { go("dashboard", setMode); setOpen(false); }} className="block w-full px-4 py-3 text-left hover:bg-gray-100" > Dashboard </button>
+                <button onClick={() => handleLogout()} className="block w-full px-4 py-3 text-left text-red-600 hover:bg-gray-100" > Logout </button>
+              </div>
+            )}
           </div>
+        ) : (
+        <button onClick={handleGoogle}
+          className="rounded-2xl bg-slate-950 font-black text-white px-7 py-4 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0"
+        > Continue with Google </button>
+       )}
+      <PremiumButton onClick={onStart} className="px-5 py-3">{headerCtaLabel}</PremiumButton>
+    </div>
+  
+    {/* Mobile: always-visible CTA + hamburger toggle */}
+    <div className="flex items-center gap-2 md:hidden">
+      <PremiumButton onClick={onStart} className="px-4 py-3">{headerCtaLabel}</PremiumButton>
+      <button
+        onClick={() => setMobileOpen(!mobileOpen)}
+        aria-label="Toggle menu"
+        aria-expanded={mobileOpen}
+        className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white p-4 text-slate-700"
+      >
+        {mobileOpen ? (
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+        ) : (
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 6h16" /><path d="M4 12h16" /><path d="M4 18h16" /></svg>
         )}
+      </button>
+    </div>
+    </div>
+  
+    {/* Mobile menu panel */}
+    {mobileOpen && (
+      <div className="border-t border-slate-100 bg-white/95 backdrop-blur-xl md:hidden">
+        <div className="mx-auto max-w-7xl px-4 py-4">
+          <nav className="flex flex-col gap-1 text-sm font-bold text-slate-600">
+            <a href="/#proof" onClick={() => setMobileOpen(false)} className="rounded-xl px-3 py-3 hover:bg-slate-50">Proof</a>
+            <a href="/#how" onClick={() => setMobileOpen(false)} className="rounded-xl px-3 py-3 hover:bg-slate-50">How it works</a>
+            <a href="/#pricing" onClick={() => setMobileOpen(false)} className="rounded-xl px-3 py-3 hover:bg-slate-50">Pricing</a>
+            <a href="/#mobile" onClick={() => setMobileOpen(false)} className="rounded-xl px-3 py-3 hover:bg-slate-50">Mobile</a>
+          </nav>
+  
+          <div className="mt-3 border-t border-slate-100 pt-3">
+            {user && !user?.is_guest ? (
+              <div className="flex flex-col gap-2">
+                <div className="rounded-2xl bg-cyan-50 px-4 py-3 text-center font-black text-slate-700">{credits?.remaining ?? 0} Credits</div>
+                <button onClick={() => { go("dashboard", setMode); setMobileOpen(false); }} className="rounded-2xl border border-slate-200 px-4 py-3 text-left font-bold hover:bg-slate-50">Dashboard</button>
+                <button onClick={() => { handleLogout(); setMobileOpen(false); }} className="rounded-2xl border border-slate-200 px-4 py-3 text-left font-bold text-red-600 hover:bg-slate-50">Logout</button>
+              </div>
+            ) : (
+              <button onClick={() => { handleGoogle(); setMobileOpen(false); }}
+                className="w-full rounded-2xl bg-slate-950 px-7 py-4 font-black text-white transition-all duration-200 active:translate-y-0"
+              >Continue with Google</button>
+            )}
+          </div>
+        </div>
       </div>
-    ) : (
-    <button onClick={handleGoogleCta}
-      className="rounded-2xl bg-slate-950 font-black text-white px-7 py-4 transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0"
-    > Continue with Google </button>
-   )}
-  <div className="hidden md:block">
-    <PremiumButton onClick={handleHeaderCta} className="px-5 py-3">{headerCta}</PremiumButton>
-  </div></div></header>;
+    )}
+    </header>;
 }
 
 
@@ -614,11 +415,11 @@ function HeaderX() {
 }
 
 function ScoreCard({scoreBreakdown}) {
-  return <Card className="relative overflow-hidden rounded-[2.5rem] border-white/10 bg-white shadow-2xl"><CardContent className="p-0"><div className="p-7 text-white" style={{ background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.navy})` }}><div className="flex items-center justify-between"><span className="font-black">ATS Match Analysis</span><Icon name="sparkles" className="text-cyan-300" /></div><div className="mt-7 grid grid-cols-2 gap-4"><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">Current score</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.warning }}>62%</div></div><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">After CVMatch</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.success }}>86%</div></div></div></div><div className="space-y-4 p-7">{scoreBreakdown.slice(0, 3).map((item) => <ScoreBar key={item.label} {...item}/>)}</div></CardContent></Card>;
+  return <Card className="relative overflow-hidden rounded-[2.5rem] border-white/10 bg-white shadow-2xl"><CardContent className="p-0"><div className="p-7 text-white" style={{ background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.navy})` }}><div className="flex items-center justify-between"><span className="font-black">ATS Match Analysis</span><Icon name="sparkles" className="text-cyan-300" /></div><div className="mt-7 grid grid-cols-2 gap-4"><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">Current score</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.warning }}>48%</div></div><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">After CVMatch</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.success }}>86%</div></div></div></div><div className="space-y-4 p-7">{scoreBreakdown.slice(0, 3).map((item) => <ScoreBar key={item.label} {...item}/>)}</div></CardContent></Card>;
 }
 
 function FakeScoreCard() {
-  return <Card className="relative overflow-hidden rounded-[2.5rem] border-white/10 bg-white shadow-2xl"><CardContent className="p-0"><div className="p-7 text-white" style={{ background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.navy})` }}><div className="flex items-center justify-between"><span className="font-black">ATS Match Analysis</span><Icon name="sparkles" className="text-cyan-300" /></div><div className="mt-7 grid grid-cols-2 gap-4"><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">Current score</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.warning }}>62%</div></div><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">After CVMatch</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.success }}>86%</div></div></div></div><div className="space-y-4 p-7">{fakeScoreBreakdown.slice(0, 3).map((item) => <ScoreBar key={item.label} {...item}/>)}</div></CardContent></Card>;
+  return <Card className="relative overflow-hidden rounded-[2.5rem] border-white/10 bg-white shadow-2xl"><CardContent className="p-0"><div className="p-7 text-white" style={{ background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.navy})` }}><div className="flex items-center justify-between"><span className="font-black">ATS Match Analysis</span><Icon name="sparkles" className="text-cyan-300" /></div><div className="mt-7 grid grid-cols-2 gap-4"><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">Current score</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.warning }}>48%</div></div><div className="rounded-3xl border border-white/10 bg-white/10 p-5"><div className="text-sm text-white/45">After CVMatch</div><div className="mt-2 text-5xl font-black" style={{ color: COLORS.success }}>86%</div></div></div></div><div className="space-y-4 p-7">{fakeScoreBreakdown.slice(0, 3).map((item) => <ScoreBar key={item.label} {...item}/>)}</div></CardContent></Card>;
 }
 
 function LandingPage({ onStart, setMode  }) {
@@ -653,7 +454,7 @@ function Hero({ onStart, setMode , scoreBreakdown }) {
 
 
 
-function ProofSection({ onStart }) { return <section id="proof" className="mx-auto max-w-7xl px-4 py-20"><div className="mx-auto max-w-3xl text-center"><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-500">Proof first</p><h2 className="mt-3 text-4xl font-black tracking-tight text-slate-950 md:text-6xl">See exactly why your resume gets rejected</h2><p className="mt-4 text-lg leading-relaxed text-slate-600">Most resumes fail because they don’t match job requirements or ATS filters. CVMatch AI shows the problem before asking you to pay.</p></div><div className="mt-12 grid gap-6 lg:grid-cols-2"><Card className="rounded-[2rem] border-slate-100 bg-white shadow-xl"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">Before</h3><span className="rounded-full bg-red-50 px-3 py-1 text-xs font-black text-red-600">Rejected</span></div><div className="mt-5 rounded-3xl bg-slate-50 p-5 text-sm leading-7 text-slate-500">Generic summary. Missing job keywords. Weak bullet points. Low ATS readability. Same resume sent everywhere.</div><div className="mt-5"><div className="mb-2 flex justify-between text-sm font-black"><span>ATS match</span><span style={{ color: COLORS.warning }}>62%</span></div><Progress value={62} color={COLORS.warning} /></div></CardContent></Card><Card className="rounded-[2rem] border-cyan-100 bg-white shadow-xl"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">After CVMatch AI</h3><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-600">Interview-ready</span></div><div className="mt-5 rounded-3xl p-5 text-sm leading-7 text-slate-700" style={{ background: COLORS.softBlue }}>US-standard resume structure. ATS keywords included. Stronger bullet points. Matching cover letter. Premium PDF ready to send.</div><div className="mt-5"><div className="mb-2 flex justify-between text-sm font-black"><span>ATS match</span><span style={{ color: COLORS.success }}>86%</span></div><Progress value={86} color={COLORS.success} /></div></CardContent></Card></div>
+function ProofSection({ onStart }) { return <section id="proof" className="mx-auto max-w-7xl px-4 py-20"><div className="mx-auto max-w-3xl text-center"><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-500">Proof first</p><h2 className="mt-3 text-4xl font-black tracking-tight text-slate-950 md:text-6xl">See exactly why your resume gets rejected</h2><p className="mt-4 text-lg leading-relaxed text-slate-600">Most resumes fail because they don’t match job requirements or ATS filters. CVMatch AI shows the problem before asking you to pay.</p></div><div className="mt-12 grid gap-6 lg:grid-cols-2"><Card className="rounded-[2rem] border-slate-100 bg-white shadow-xl"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">Before</h3><span className="rounded-full bg-red-50 px-3 py-1 text-xs font-black text-red-600">Rejected</span></div><div className="mt-5 rounded-3xl bg-slate-50 p-5 text-sm leading-7 text-slate-500">Generic summary. Missing job keywords. Weak bullet points. Low ATS readability. Same resume sent everywhere.</div><div className="mt-5"><div className="mb-2 flex justify-between text-sm font-black"><span>ATS match</span><span style={{ color: COLORS.warning }}>48%</span></div><Progress value={48} color={COLORS.warning} /></div></CardContent></Card><Card className="rounded-[2rem] border-cyan-100 bg-white shadow-xl"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">After CVMatch AI</h3><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-600">Interview-ready</span></div><div className="mt-5 rounded-3xl p-5 text-sm leading-7 text-slate-700" style={{ background: COLORS.softBlue }}>US-standard resume structure. ATS keywords included. Stronger bullet points. Matching cover letter. Premium PDF ready to send.</div><div className="mt-5"><div className="mb-2 flex justify-between text-sm font-black"><span>ATS match</span><span style={{ color: COLORS.success }}>86%</span></div><Progress value={86} color={COLORS.success} /></div></CardContent></Card></div>
 <div className="mt-10 text-center">
   <PremiumButton onClick={onStart}>Check my resume for free</PremiumButton>
   
@@ -681,9 +482,69 @@ function PricingSection({ onStart }) {
   } = useAuth();
 
   const [pricingPlans, setPricingPlans] = useState([]);
-  const [pricingConfig, setPricingConfig] = useState(null);
   const [loading, setLoading] = useState(true);
 
+
+  const handlePlanClick = async (plan) => { 
+    trackMeta(`subscription_${plan.price}`, { method: "google", location: "site_CVMatchApp" }, true);
+    localStorage.setItem( "selected_plan", plan  );
+    try {
+
+      const token = localStorage.getItem("token");
+      const response = await fetch( `${API_URL}/v1/auth/me`,  {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json"
+        }
+      });
+
+      // Non connecté
+      if (!response.ok) {
+        connectWithGoogle(token);
+        return;
+      }
+
+
+      if (plan.provider === "paddle") {
+        // Backend Laravel crée l'URL checkout Paddle
+        const checkoutResponse = await fetch( `${API_URL}/v1/payments/paddle/checkout`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+              Accept: "application/json",
+            },
+            body: JSON.stringify({
+              price_id: plan.price_id,
+              plan_name: plan.name,
+            }),
+          }
+        );
+        const checkoutData = await checkoutResponse.json();
+
+        if (checkoutData?.checkout_url) {
+          // Redirection vers page hébergée Paddle
+          window.location.href = checkoutData.checkout_url;
+          return;
+        }
+
+        throw new Error("Impossible de créer le checkout Paddle");
+        return;
+      }
+
+     
+      if (plan.provider == "gumroad" && plan.url) {
+        const url = `${API_URL}/payments/gumroad?link=${encodeURIComponent(plan.url)}`;
+        window.location.href = url;
+        return;
+      }
+     
+    } catch (error) { 
+      console.error(error);
+    }
+   
+  };
 
   const handleView_ = async (plan) => { 
   
@@ -707,8 +568,8 @@ function PricingSection({ onStart }) {
       window.location.replace(url) ;
       return;
      
-    } catch { 
-      console.error("Unable to open selected plan.");
+    } catch (error) { 
+      console.error(error);
     }
    
   };
@@ -720,19 +581,10 @@ function PricingSection({ onStart }) {
         const res = await fetch(`${API_URL}/v1/credit-plans`, {
                             credentials: "include"
                           });
-        if (!res.ok) {
-          throw new Error("Pricing request failed");
-        }
         const data = await res.json();
-        const plans = Array.isArray(data?.data)
-          ? data.data.map((plan) => plan?.custom_ui ? { ...plan.custom_ui, credits: plan.credits } : null).filter(Boolean)
-          : [];
-        setPricingConfig(getPricingConfig(data));
-        setPricingPlans(plans);
-      } catch {
-        setPricingConfig(null);
-        setPricingPlans([]);
-        console.error("Error loading pricing plans.");
+        setPricingPlans(data.data.map(plan => plan.custom_ui));
+      } catch (error) {
+        console.error("Error loading pricing plans:", error);
       } finally {
         setLoading(false);
       }
@@ -746,24 +598,21 @@ function PricingSection({ onStart }) {
   return <section id="pricing" className="mx-auto max-w-7xl px-4 py-20"><div className="mx-auto max-w-3xl text-center"><p className="text-sm font-black uppercase tracking-[0.24em] text-cyan-500">Simple pricing</p><h2 className="mt-3 text-4xl font-black md:text-6xl">Start with one job application</h2><p className="mt-4 text-lg text-slate-600">Each optimized resume consumes 1 credit. No subscription. No hidden fees. Unlock the optimized resume and cover letter for one targeted US job application.</p></div>
   <div className="grid lg:grid-cols-3 gap-5 mt-10">
     {loading ? ( <div className="text-center py-20">Loading pricing...</div> ):(
-    pricingPlans.map((plan, index) => {
-    const pricingDisplay = getPlanPricingDisplay(plan, pricingConfig);
-    return (
+    pricingPlans.map((plan, index) => 
     <Card key={plan.id} className={`rounded-[2.5rem] border-slate-100 bg-white transition-all duration-200 hover:-translate-y-1 hover:shadow-2xl ${index === 1 ? "ring-2 ring-cyan-300" : ""}`}>
       <CardContent className="p-7">
         <div className="flex items-center justify-between gap-3"><h3 className="text-2xl font-black">{plan.name}</h3>{plan.badge &&<span className={`text-xs font-black rounded-full px-3 py-2 ${index === 1 ? "bg-cyan-100 text-cyan-700" : "bg-slate-100 text-slate-700"}`}>{plan.badge}</span>}</div>
-        <div className="mt-5"><span className="text-5xl font-black">{pricingDisplay.price}</span>{pricingDisplay.promoEnabled && <p className="mt-1 text-sm font-black text-cyan-600">{pricingDisplay.promoLabel}</p>}{pricingDisplay.promoEnabled && <p className="mt-1 text-sm text-slate-500">Regular price: {pricingDisplay.regularPrice}</p>}{pricingDisplay.expiredMessage && <p className="mt-1 text-sm text-slate-500">{pricingDisplay.expiredMessage}</p>}<p className="mt-1 text-slate-500">{plan.subtitle}</p></div>
-        <div className="grid gap-3 mt-7">{(plan.features || []).map((item) => <div key={item} className="flex items-center gap-2 p-3 rounded-2xl bg-slate-50 text-sm font-bold"><Icon name="check" size={16} className="text-cyan-500"/>{item}</div>)}{plan.description && <div  className="flex items-center gap-2 p-3 rounded-2xl bg-slate-50 text-sm font-bold">{plan.description}</div>}</div>
+        <div className="mt-5"><span className="text-5xl font-black">{plan.price}</span><p className="mt-1 text-slate-500">{plan.subtitle}</p></div>
+        <div className="grid gap-3 mt-7">{plan.features.map((item) => <div key={item} className="flex items-center gap-2 p-3 rounded-2xl bg-slate-50 text-sm font-bold"><Icon name="check" size={16} className="text-cyan-500"/>{item}</div>)}{plan.description && <div  className="flex items-center gap-2 p-3 rounded-2xl bg-slate-50 text-sm font-bold">{plan.description}</div>}</div>
         {/* <Link to={`/product/${plan.id}`}> 
               <button className="mt-4 w-full bg-black text-white py-2 rounded-xl">
                 View
               </button>
             </Link> */}
         <PremiumButton onClick={() => handleView_(plan)} className="w-full mt-7" variant={index === 1 ? "primary" : "gold"}>{plan.cta}</PremiumButton>
+        {/* <PremiumButton onClick={() => handlePlanClick(plan)} className="w-full mt-7" variant={index === 1 ? "primary" : "gold"}>{plan.cta}</PremiumButton> */}
       </CardContent>
-    </Card>
-    );
-    }))
+    </Card>))
   }
   </div></section>; }
 
@@ -780,9 +629,34 @@ function FinalCTA({ onStart }) { return <section className="mx-auto max-w-7xl px
 function ResumeUpload({ next, resumeName, setResumeName , resumeFile, setResumeFile
 }) {
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const handleFileChange = (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+
+    // Validate type: PDF and DOCX only (reject legacy .doc, txt, etc.).
+    const name = (file.name || "").toLowerCase();
+    const isPdf = file.type === "application/pdf" || name.endsWith(".pdf");
+    const isDocx =
+      file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      name.endsWith(".docx");
+    const isLegacyDoc =
+      file.type === "application/msword" || (name.endsWith(".doc") && !name.endsWith(".docx"));
+
+    if (isLegacyDoc || (!isPdf && !isDocx)) {
+      setUploadError("Only PDF and DOCX files are supported.");
+      event.target.value = "";
+      return;
+    }
+
+    // Validate size: 10 MB max.
+    if (file.size > 10 * 1024 * 1024) {
+      setUploadError("Resume file must be 10 MB or smaller.");
+      event.target.value = "";
+      return;
+    }
+
+    setUploadError("");
     setIsUploading(true);
     setResumeFile(file);
     setResumeName(file.name);
@@ -817,7 +691,11 @@ function ResumeUpload({ next, resumeName, setResumeName , resumeFile, setResumeF
         <p className="text-sm text-slate-500 mt-2"> or click to choose a file</p>
 
       {!resumeFile && (
-        <input className="mt-6 block mx-auto text-sm" type="file" accept=".pdf,.doc,.docx,.txt" onChange={handleFileChange}  />
+        <input className="mt-6 block mx-auto text-sm" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleFileChange}  />
+      )}
+
+      {uploadError && (
+        <p className="text-red-600 mt-4 text-sm">{uploadError}</p>
       )}
       
 
@@ -856,7 +734,7 @@ function JobDescription({ next, jobText, setJobText ,resumeUploading}) {
 
   const handleNext = async () => {
     setIsSubmitting(true);
-    try { await next(); } catch { console.error("Job analysis step failed."); setIsSubmitting(false);}
+    try { await next(); } catch (error) {console.error(error); setIsSubmitting(false);}
   };
   const isDisabled = jobText.length < 80 || resumeUploading || isSubmitting;
 
@@ -883,11 +761,12 @@ function Analysis({ next }) { const [progress, setProgress] = useState(0); React
 const unlockItems = [
   "Full rewritten U.S.-style resume",
   "Tailored cover letter",
-  "Exact keyword gap improvements",
-  "Before / after comparison",
-  "Recruiter-style feedback",
   "Premium PDF download",
-  "Resume TXT download",
+  "Before / after comparison",
+  "Improvements made",
+  "Supported keywords strengthened",
+  "Remaining weaknesses",
+  "Recruiter-style impression",
   "Saved report history",
 ];
 
@@ -907,26 +786,6 @@ function WhatYouUnlockBlock({ dark = false }) {
   </Card>;
 }
 
-function LockedPreviewCard({ title, text, lines = 3 }) {
-  return <Card className="relative overflow-hidden rounded-[2rem] border-slate-100 bg-white shadow-sm">
-    <CardContent className="p-7">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-xl font-black">{title}</h3>
-        <span className="rounded-full bg-cyan-50 px-3 py-2 text-xs font-black text-cyan-700 flex items-center gap-1"><Icon name="lock" size={13}/> Locked</span>
-      </div>
-      <p className="mt-3 text-sm leading-6 text-slate-500">{text}</p>
-      <div className="relative mt-5 rounded-3xl bg-slate-50 p-5">
-        <div className="space-y-3 blur-sm select-none">
-          {Array.from({ length: lines }).map((_, index) => <div key={index} className="h-3 rounded-full bg-slate-300/70" style={{ width: `${92 - index * 13}%` }} />)}
-        </div>
-        <div className="absolute inset-0 flex items-center justify-center rounded-3xl bg-white/50">
-          <span className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-black text-white">Unlock to view</span>
-        </div>
-      </div>
-    </CardContent>
-  </Card>;
-}
-
 function getStrongestImprovements(breakdown, optimizedBreakdown) {
   return [
     ["Resume structure", breakdown.resume_structure, optimizedBreakdown.resume_structure],
@@ -936,18 +795,12 @@ function getStrongestImprovements(breakdown, optimizedBreakdown) {
     ["Experience relevance", breakdown.experience_relevance, optimizedBreakdown.experience_relevance],
     ["Achievement quality", breakdown.achievement_quality, optimizedBreakdown.achievement_quality],
   ]
-    .map(([label, before, after]) => {
-      const beforeScore = toScoreNumber(before);
-      const afterScore = toScoreNumber(after);
-      if (beforeScore === null || afterScore === null) return null;
-      return {
-        label,
-        before: beforeScore,
-        after: afterScore,
-        gain: afterScore - beforeScore,
-      };
-    })
-    .filter(Boolean)
+    .map(([label, before, after]) => ({
+      label,
+      before: Number(before) || 0,
+      after: Number(after) || 0,
+      gain: (Number(after) || 0) - (Number(before) || 0),
+    }))
     .filter((item) => item.after > 0 && item.gain > 0)
     .sort((a, b) => b.gain - a.gain)
     .slice(0, 4);
@@ -970,40 +823,32 @@ function StrongestImprovementsBlock({ improvements }) {
   </Card>;
 }
 
-function FreeResult({ next,restart, goMobile, unlockFlowStatus, unlockError, freeScanLimit }) { 
+function FreeResult({ next,restart, goMobile }) { 
   const {
     setMode,
     connectWithGoogle,
     credits,
   } = useAuth();
-  const [analyseResult, setAnalyseResult] = useState(null);
-  const [loadingAnalysis, setLoadingAnalysis] = useState(true);
-  const [restoreError, setRestoreError] = useState("");
-  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-  const guestToken = typeof window !== "undefined" ? localStorage.getItem("guest_token") : null;
-  const analysisId = getStoredAnalysisId();
+  const [analyseResult, setAnalyseResult] = useState({
+    // critical_issues: [],
+    // missing_keywords: [],
+  });
+  const token = localStorage.getItem("token");
+  const guestToken = localStorage.getItem("guest_token");
+  const analysisId = localStorage.getItem("analysisId");
 
   useEffect(() => {
-    safeTrackMeta("report_viewed", { location: "free_report", status: "viewed" }, true);
-    safeTrackMeta("paywall_viewed", { location: "paywall", status: "viewed" }, true);
+    trackMeta("report_viewed", { location: "free_report", status: "viewed" }, true);
+    trackMeta("paywall_viewed", { location: "paywall", status: "viewed" }, true);
     const googlePromptKey = "cvmatch_google_signin_prompt_viewed";
     if (!token && typeof window !== "undefined" && !window.sessionStorage.getItem(googlePromptKey)) {
-      safeTrackMeta("google_signin_prompt_viewed", { location: "free_report", status: "viewed" }, true);
+      trackMeta("google_signin_prompt_viewed", { location: "free_report", status: "viewed" }, true);
       window.sessionStorage.setItem(googlePromptKey, "1");
     }
   }, []);
 
   useEffect(() => {
     const fetchPlans = async () => {
-      if (freeScanLimit?.free_scan_limit_reached) {
-        setLoadingAnalysis(false);
-        return;
-      }
-      if (!analysisId) {
-        setRestoreError(RESTORE_ANALYSIS_ERROR);
-        setLoadingAnalysis(false);
-        return;
-      }
       try {
         const headers = { Accept: "application/json", };
         if (token) {
@@ -1022,224 +867,62 @@ function FreeResult({ next,restart, goMobile, unlockFlowStatus, unlockError, fre
           return;
         }
         
-        if (!res.ok) {
-          throw new Error("Unable to restore analysis");
-        }
         const data = await res.json();
-        if (!data?.data) {
-          throw new Error("Unable to restore analysis");
-        }
-        persistAnalysisIdForUnlock(data.data.id || analysisId);
         setAnalyseResult(data.data);
-        setRestoreError("");
-      } catch {
-        setRestoreError(RESTORE_ANALYSIS_ERROR);
-        console.error("Unable to restore analysis.");
-      } finally {
-        setLoadingAnalysis(false);
+      } catch (error) {
+        console.error("Error loading pricing plans:", error);
       } 
     };
 
     fetchPlans();
-  }, [token,guestToken,analysisId,freeScanLimit]);
+  }, [token,guestToken]);
 
   const originalResume = analyseResult?.posted_resume ;
   const optimizedResume = analyseResult?.optimized_resume_text ;
   
-  const originalScore = toScoreNumber(analyseResult?.score);
+  const originalScore =analyseResult?.score || 0;
   const breakdown = analyseResult?.score_breakdown || {};
 
   const optimized = analyseResult?.optimized_resume_analysis;
   const optimizedBreakdown = optimized?.scoring_breakdown || {};
-  const optimizedScore = toScoreNumber(optimized?.overall_ats_score);
-  const explicitImprovement = toScoreNumber(optimized?.score_improvement);
-  const scoreImprovement = explicitImprovement ?? (optimizedScore !== null && originalScore !== null ? Math.max(optimizedScore - originalScore, 0) : null);
+  const optimizedScore = optimized?.overall_ats_score || 0;
+  const scoreImprovement = optimized?.score_improvement ?? Math.max(optimizedScore - originalScore, 0);
+  const hasScoreImprovement = Number.isFinite(Number(scoreImprovement)) && Number(scoreImprovement) > 0;
   const strongestImprovements = getStrongestImprovements(breakdown, optimizedBreakdown);
-  const isPreviewMode = analyseResult?.mode === "preview" || analyseResult?.is_full_unlocked === false || analyseResult?.locked === true;
-  const previewScore = toScoreNumber(analyseResult?.current_score ?? analyseResult?.score);
-  const previewRiskLevel = analyseResult?.risk_level || analyseResult?.match_level;
-  const missingKeywordsCount = Number.isFinite(Number(analyseResult?.missing_keywords_count)) ? Number(analyseResult.missing_keywords_count) : null;
-  const previewTopIssues = (Array.isArray(analyseResult?.top_issues) && analyseResult.top_issues.length > 0
-    ? analyseResult.top_issues
-    : ["Resume structure needs improvement", "Role-specific keywords are weak or missing", "Experience is not clearly positioned for the target job"]
-  ).slice(0, 3);
   const hasCredits = (credits?.remaining ?? 0) > 0;
-  const primaryCtaLabel = token ? (hasCredits ? "Use 1 Credit to Unlock Resume" : "Buy 1 Credit & Unlock Resume") : "Continue with Google to Unlock";
-  const generationInProgress = isFullGenerationProcessing(analyseResult);
-  const generationFailed = isFullGenerationFailed(analyseResult);
-  const unlockLoading = unlockFlowStatus === "unlocking" || unlockFlowStatus === "checkout" || generationInProgress;
-  const unlockLoadingText = unlockFlowStatus === "unlocking" || generationInProgress
-    ? "Generating your optimized resume package..."
-    : unlockFlowStatus === "checkout"
-      ? "Preparing secure checkout..."
-      : "";
-  const handlePrimaryCta = () => next("free_report");
-
-  useEffect(() => {
-    if (!isPreviewMode || !analyseResult?.id || typeof window === "undefined") return;
-    const previewKey = `cvmatch_free_preview_viewed_${analyseResult.id}`;
-    if (!window.sessionStorage.getItem(previewKey)) {
-      safeTrackMeta("free_preview_viewed", { location: "free_report", status: "viewed" }, true);
-      safeTrackMeta("locked_keyword_section_viewed", { location: "free_report", status: "viewed" }, true);
-      window.sessionStorage.setItem(previewKey, "1");
-    }
-  }, [isPreviewMode, analyseResult?.id]);
 
   const scoreBreakdown = [
     {
       label: "Keyword match",
-      value: breakdown.keyword_match,
+      value: breakdown.keyword_match || 0,
       note: "Keyword alignment with the job description"
     },
     {
       label: "Skills alignment",
-      value: breakdown.skills_alignment,
+      value: breakdown.skills_alignment || 0,
       note: "Relevant hard and soft skills match"
     },
     {
       label: "Experience relevance",
-      value: breakdown.experience_relevance,
+      value: breakdown.experience_relevance || 0,
       note: "Experience fit for this role"
     },
     {
       label: "Resume structure",
-      value: breakdown.resume_structure,
+      value: breakdown.resume_structure || 0,
       note: "US resume formatting and clarity"
     },
     {
       label: "ATS readability",
-      value: breakdown.ats_readability,
+      value: breakdown.ats_readability || 0,
       note: "ATS parsing and readability"
     },
     {
       label: "Achievement quality",
-      value: breakdown.achievement_quality,
+      value: breakdown.achievement_quality || 0,
       note: "Strength of measurable impact"
     }
   ];
-
-  if (loadingAnalysis) {
-    return <div className="max-w-7xl mx-auto py-20 px-4 text-center"><h2 className="text-3xl font-black">Restoring your analysis...</h2></div>;
-  }
-
-  if (restoreError) {
-    return <div className="max-w-7xl mx-auto py-20 px-4 text-center"><h2 className="text-3xl font-black">{restoreError}</h2><Button onClick={restart} className="mt-6 px-6 py-4">Run the scan again</Button></div>;
-  }
-
-  if (freeScanLimit?.free_scan_limit_reached) {
-    const handleLimitCta = () => {
-      if (getStoredAnalysisId()) {
-        handlePrimaryCta();
-        return;
-      }
-      safeTrackMeta("unlock_cta_clicked", { location: "free_scan_limit", status: "google_signin_required" }, true);
-      localStorage.setItem("redirect", "app");
-      connectWithGoogle();
-    };
-
-    return <div className="max-w-5xl mx-auto py-16 px-4">
-      <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
-        <CardContent className="p-8 text-center">
-          <p className="text-sm font-black uppercase tracking-widest text-cyan-500">Free scan limit</p>
-          <h2 className="mt-3 text-4xl md:text-5xl font-black">You have used your free resume scan.</h2>
-          <p className="mx-auto mt-4 max-w-2xl text-slate-600">{freeScanLimit.message || AUTH_FREE_SCAN_LIMIT_MESSAGE}</p>
-        </CardContent>
-      </Card>
-      <div className="mt-6"><WhatYouUnlockBlock /></div>
-      <div id="post-analysis-unlock-cta" className="mt-6">
-        <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-slate-950 text-white">
-          <CardContent className="p-7">
-            <div className="flex items-center gap-2 font-black text-xl"><Icon name="lock"/> Unlock your complete optimization package</div>
-            <p className="text-white/55 mt-2 text-sm leading-relaxed">Continue with your full optimization package and downloads.</p>
-            <PremiumButton onClick={handleLimitCta} disabled={unlockLoading} className="w-full mt-5">{unlockLoadingText || primaryCtaLabel}</PremiumButton>
-            {unlockError && <p className="mt-3 text-center text-sm text-red-200">{unlockError}</p>}
-          </CardContent>
-        </Card>
-      </div>
-    </div>;
-  }
-
-  if (isPreviewMode) {
-    if (generationInProgress && previewScore === null) {
-      return <div className="max-w-5xl mx-auto py-16 px-4">
-        <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-slate-950 text-white">
-          <CardContent className="p-8 text-center">
-            <p className="text-sm font-black uppercase tracking-widest text-cyan-300">Generating package</p>
-            <h2 className="mt-3 text-4xl md:text-5xl font-black">Generating your optimized resume package...</h2>
-            <p className="mt-3 text-white/55">This may take a few seconds.</p>
-          </CardContent>
-        </Card>
-      </div>;
-    }
-
-    if (generationFailed && previewScore === null) {
-      return <div className="max-w-5xl mx-auto py-16 px-4">
-        <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
-          <CardContent className="p-8 text-center">
-            <h2 className="text-3xl font-black">{FULL_GENERATION_ERROR}</h2>
-            <PremiumButton onClick={handlePrimaryCta} disabled={unlockLoading} className="mt-6 px-6 py-4">{unlockLoadingText || primaryCtaLabel}</PremiumButton>
-          </CardContent>
-        </Card>
-      </div>;
-    }
-
-    if (previewScore === null) {
-      return <div className="max-w-7xl mx-auto py-20 px-4 text-center"><h2 className="text-3xl font-black">{RESTORE_ANALYSIS_ERROR}</h2><Button onClick={restart} className="mt-6 px-6 py-4">Run the scan again</Button></div>;
-    }
-
-    return <div className="max-w-7xl mx-auto py-10 px-4">
-      <div className="text-center mb-8">
-        <p className="text-sm font-black uppercase tracking-widest text-cyan-500">Free preview</p>
-        <h2 className="text-4xl md:text-5xl font-black mt-2">Your resume needs targeted improvements for this role.</h2>
-        <p className="mx-auto mt-3 max-w-3xl text-slate-600">Your free preview found resume structure issues, weak role-specific signals, and missing keyword gaps. Unlock the full AI optimization package to see the exact fixes and download your optimized resume.</p>
-      </div>
-
-      <div className="grid lg:grid-cols-[0.9fr_1.1fr] gap-6">
-        <div className="space-y-6">
-          <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
-            <CardContent className="p-7">
-              <div className="flex items-center justify-between gap-4"><p className="text-sm font-black text-slate-500">Current Match Score</p>{previewRiskLevel && <span className="px-3 py-1 rounded-full bg-red-50 text-red-700 text-xs font-black">{previewRiskLevel}</span>}</div>
-              <div className="flex items-end gap-3 mt-3"><span className="text-7xl font-black" style={{ color: COLORS.warning }}>{formatScore(previewScore)}</span><span className="text-slate-500 mb-3">before optimization</span></div>
-              <div className="mt-6"><Progress value={previewScore} color={COLORS.warning}/></div>
-              <div className="mt-6 rounded-3xl bg-cyan-50 p-5">
-                <p className="text-sm font-black text-cyan-700">Missing keyword gaps</p>
-                <p className="mt-1 text-4xl font-black text-slate-950">{missingKeywordsCount === null ? "Locked" : missingKeywordsCount}</p>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
-            <CardContent className="p-7">
-              <h3 className="text-2xl font-black">Top issues found</h3>
-              <div className="mt-5 space-y-3">{previewTopIssues.map((issue, index) => <div key={index} className="flex gap-3 rounded-2xl bg-red-50 p-3 text-red-950"><Icon name="alert" size={18} className="mt-0.5"/><span className="text-sm font-bold">{issue}</span></div>)}</div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="space-y-6">
-          <LockedPreviewCard title="Exact missing keywords locked" text="Important role keywords are missing or weak. Unlock to see the exact keywords and how CVMatch AI uses them in your optimized resume." />
-          <LockedPreviewCard title="Optimized resume locked" text="Unlock to view the full rewritten U.S.-style resume tailored to this role." lines={4} />
-          <LockedPreviewCard title="Cover letter locked" text="Unlock to view the tailored cover letter generated for this job application." />
-          <LockedPreviewCard title="Recruiter-style feedback locked" text="Unlock to view role-fit feedback, remaining weaknesses, and recruiter-style improvement notes." />
-          <LockedPreviewCard title="Premium PDF locked" text="Unlock to download the premium PDF and resume TXT files." />
-          <WhatYouUnlockBlock />
-          <div id="post-analysis-unlock-cta">
-            <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-slate-950 text-white">
-              <CardContent className="p-7">
-                <div className="flex items-center gap-2 font-black text-xl"><Icon name="lock"/> Unlock your complete optimization package</div>
-                <p className="text-white/55 mt-2 text-sm leading-relaxed">Get the exact fixes, full optimized resume, cover letter, and downloads.</p>
-                <PremiumButton onClick={handlePrimaryCta} disabled={unlockLoading} className="w-full mt-5">{unlockLoadingText || primaryCtaLabel}</PremiumButton>
-                {unlockFlowStatus === "unlocking" && <p className="mt-3 text-center text-sm text-white/55">This may take a few seconds.</p>}
-                {unlockError && <p className="mt-3 text-center text-sm text-red-200">{unlockError}</p>}
-                <p className="mt-3 text-center text-sm text-white/45">One-time payment. No subscription.</p>
-                <p className="mt-2 text-center text-xs leading-5 text-white/40">CVMatch AI provides resume analysis and optimization suggestions. It does not guarantee job or interview outcomes.</p>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      </div>
-    </div>;
-  }
 
   return <div className="max-w-7xl mx-auto py-10 px-4">
   <div className="text-center mb-8">
@@ -1247,16 +930,18 @@ function FreeResult({ next,restart, goMobile, unlockFlowStatus, unlockError, fre
     <h2 className="text-4xl md:text-5xl font-black mt-2">Your resume needs targeted improvements for this role.</h2>
     <p className="text-slate-600 mt-3">Your free scan found weak ATS readability, U.S. resume structure issues, and missing role-specific signals.</p>
     <p className="mx-auto mt-3 max-w-3xl text-slate-600">Unlock the optimized resume package to get a rewritten U.S.-style resume, tailored cover letter, premium PDF, before/after comparison, and recruiter-style feedback.</p>
-    {optimizedScore !== null && scoreImprovement !== null && (optimizedScore < 60 ? (
-      <p className="mt-3 text-sm font-black text-emerald-600">Estimated improvement: +{scoreImprovement} match points</p>
+    {optimizedScore < 60 ? (
+      hasScoreImprovement && (
+      <p className="mt-3 text-sm font-black text-emerald-600">Estimated improvement: +{scoreImprovement || 0} match points</p>
+      )
     ) : (
-      <p className="mt-3 text-sm font-black text-emerald-600">Estimated match score after optimization: {optimizedScore}% (+{scoreImprovement} points)</p>
-    ))}
+      <p className="mt-3 text-sm font-black text-emerald-600">Estimated match score after optimization: {optimizedScore}% (+{scoreImprovement || 0} points)</p>
+    )}
   </div>
   <div className="grid lg:grid-cols-[0.95fr_1.05fr] gap-6">
     <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7">
       <div className="flex items-center justify-between"><p className="text-sm font-black text-slate-500">Current Match Score</p><span className="px-3 py-1 rounded-full bg-red-50 text-red-700 text-xs font-black"> { analyseResult?.match_level}</span></div>
-      <div className="flex items-end gap-3 mt-3"><span className="text-7xl font-black" style={{ color: COLORS.warning }}>{formatScore(originalScore)}</span><span className="text-slate-500 mb-3">before optimization</span></div>
+      <div className="flex items-end gap-3 mt-3"><span className="text-7xl font-black" style={{ color: COLORS.warning }}>{originalScore}%</span><span className="text-slate-500 mb-3">before optimization</span></div>
       <div className="mt-6"><Progress value={originalScore} color={COLORS.warning}/></div>
       <div className="grid gap-3 mt-6">{scoreBreakdown.map((item) => <ScoreBar key={item.label} {...item}/>)}</div>
     </CardContent></Card>
@@ -1287,7 +972,7 @@ function FreeResult({ next,restart, goMobile, unlockFlowStatus, unlockError, fre
         <CardContent className="p-7">
           <h3 className="text-2xl font-black">Expected improvement after optimization</h3>
           <p className="text-slate-600 mt-2">The paid package focuses on a stronger resume structure, role-specific presentation, and supported keyword coverage.</p>
-          {scoreImprovement !== null && <p className="text-slate-600 mt-2">Estimated improvement:{" "} <span className="font-black text-emerald-600">+{scoreImprovement} match points</span></p>}
+          {hasScoreImprovement && (<p className="text-slate-600 mt-2">Estimated improvement:{" "} <span className="font-black text-emerald-600">+{scoreImprovement || 0} match points</span></p>)}
 
               <div className="grid gap-3 mt-6">
                 {[
@@ -1298,7 +983,7 @@ function FreeResult({ next,restart, goMobile, unlockFlowStatus, unlockError, fre
                   ["ATS readability", optimizedBreakdown.ats_readability],
                   ["Achievement quality", optimizedBreakdown.achievement_quality]
                 ].map(([label, value]) => (
-                  <ScoreBar key={label} label={label} value={value}  note="Projected score after optimization"  />
+                  <ScoreBar key={label} label={label} value={value || 0}  note="Projected score after optimization"  />
                 ))}
               </div>
 
@@ -1311,39 +996,35 @@ function FreeResult({ next,restart, goMobile, unlockFlowStatus, unlockError, fre
       </Card>
       <WhatYouUnlockBlock />
       <BeforeAfter locked optimizedResume={optimizedResume}  originalResume ={originalResume} />
-      <div id="post-analysis-unlock-cta">
       <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-slate-950 text-white">
         <CardContent className="p-7">
           <div className="flex items-center gap-2 font-black text-xl"><Icon name="lock"/> Unlock your complete optimization package</div>
           <p className="text-white/55 mt-2 text-sm leading-relaxed">Get everything generated from this resume scan and job description.</p>
           {token ?  (
-              analyseResult?.locked && ( <PremiumButton onClick={handlePrimaryCta} disabled={unlockLoading} className="w-full mt-5">{unlockLoadingText || primaryCtaLabel}</PremiumButton>)
+              analyseResult?.locked && ( <PremiumButton onClick={() => { trackMeta("unlock_cta_clicked", { location: "free_report", status: hasCredits ? "has_credit" : "needs_credit" }, true); next(); }} className="w-full mt-5">{hasCredits ? "Use 1 Credit to Unlock Resume" : "Buy 1 Credit & Unlock Resume"}</PremiumButton>)
           ) : (
             <>
               <div className="mt-5 rounded-3xl bg-white/10 p-5">
                 <p className="font-black">Continue with Google to save your optimized resume, access your downloads, and keep your report history.</p>
                 <p className="mt-2 text-sm text-white/55">No password needed. Secure checkout after sign-in.</p>
               </div>
-              <PremiumButton onClick={handlePrimaryCta} disabled={unlockLoading} className="w-full mt-5">{unlockLoadingText || primaryCtaLabel}</PremiumButton> 
+              <PremiumButton  onClick={() => { trackMeta("unlock_cta_clicked", { location: "free_report", status: "google_signin_required" }, true); trackGoogleLoginStartedFromPaywall(); localStorage.setItem("redirect", "app" ); connectWithGoogle();}} className="w-full mt-5">Continue with Google</PremiumButton> 
             </>
           )}
-          {unlockError && <p className="mt-3 text-center text-sm text-red-200">{unlockError}</p>}
           <p className="mt-3 text-center text-sm text-white/45">One-time payment. No subscription.</p>
           <p className="mt-2 text-center text-xs leading-5 text-white/40">CVMatch AI provides resume analysis and optimization suggestions. It does not guarantee job or interview outcomes.</p>
-           
-          <Button variant="outline" className="rounded-2xl mt-3 bg-transparent border-white/20 text-black hover:bg-white/10 w-full py-4" onClick={goMobile}>Continue on mobile app</Button>
+                     <Button variant="outline" className="rounded-2xl mt-3 bg-transparent border-white/20 text-black hover:bg-white/10 w-full py-4" onClick={goMobile}>Continue on mobile app</Button>
           {/* <Button onClick={restart} variant="outline" className="rounded-2xl mt-3 bg-transparent border-white/20 text-black hover:bg-white/10 w-full py-4">Optimize another resume</Button> */}
 
         </CardContent>
       </Card>
-      </div>
     </div>
   </div>
 </div>; }
 
 function BeforeAfter({ locked = false , optimizedResume, originalResume }) { 
   const previewText = optimizedResume ?.split(" ") ?.slice(0, 40) ?.join(" ");
-  return <Card className="rounded-[2rem] shadow-sm border-slate-100 overflow-hidden bg-white"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">{locked ? "Before / After" :  "Before"} </h3>{locked && <span className="text-xs font-black bg-cyan-50 text-cyan-700 rounded-full px-3 py-2 flex items-center gap-1"><Icon name="lock" size={13}/> Locked preview</span>}</div><div className={`grid ${locked ? "md:grid-cols-2" : "md:grid-cols-1"}  gap-4 mt-5`} ><div className="rounded-3xl bg-slate-50 p-5 h-72 overflow-hidden"><p className="text-xs font-black uppercase tracking-widest text-slate-400 mb-3">Original</p><pre className="whitespace-pre-wrap text-xs leading-4 text-slate-600 font-sans">{originalResume}</pre></div>
+  return <Card className="rounded-[2rem] shadow-sm border-slate-100 overflow-hidden bg-white"><CardContent className="p-7"><div className="flex items-center justify-between"><h3 className="text-2xl font-black">{locked ? "Before → After" :  "Before"} </h3>{locked && <span className="text-xs font-black bg-cyan-50 text-cyan-700 rounded-full px-3 py-2 flex items-center gap-1"><Icon name="lock" size={13}/> Locked preview</span>}</div><div className={`grid ${locked ? "md:grid-cols-2" : "md:grid-cols-1"}  gap-4 mt-5`} ><div className="rounded-3xl bg-slate-50 p-5 h-72 overflow-hidden"><p className="text-xs font-black uppercase tracking-widest text-slate-400 mb-3">Original</p><pre className="whitespace-pre-wrap text-xs leading-4 text-slate-600 font-sans">{originalResume}</pre></div>
         {locked && <div className="relative rounded-3xl bg-slate-950 text-white p-5 h-72 overflow-hidden"> 
           <p className="text-xs font-black uppercase tracking-widest text-cyan-300 mb-3">Optimized resume package</p>
           <pre className={`whitespace-pre-wrap text-xs leading-6 font-sans ${locked ? "blur-sm select-none" : ""}`}>{locked ? `${previewText}...` : optimizedResume}</pre>
@@ -1356,20 +1037,13 @@ function BeforeAfter({ locked = false , optimizedResume, originalResume }) {
 function FinalResult({ restart, goMobile, onReview }) { 
   const { connectWithGoogle} = useAuth();
 
-  const [analyseResult, setAnalyseResult] = useState(null);
-  const [loadingResult, setLoadingResult] = useState(true);
-  const [restoreError, setRestoreError] = useState("");
-  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-  const analysisId = getStoredAnalysisId();
+  const [analyseResult, setAnalyseResult] = useState([]);
+  const token = localStorage.getItem("token");
+  const analysisId = localStorage.getItem("analysisId");
 
 
   useEffect(() => {
     const fetchPlans = async () => {
-      if (!analysisId) {
-        setRestoreError(RESTORE_ANALYSIS_ERROR);
-        setLoadingResult(false);
-        return;
-      }
       try {
         const headers = { Accept: "application/json", };
         if (token) {  headers.Authorization = `Bearer ${token}`;}
@@ -1382,33 +1056,23 @@ function FinalResult({ restart, goMobile, onReview }) {
           connectWithGoogle(token);
           return;
         }
-        if (!res.ok) {
-          throw new Error("Unable to restore analysis");
-        }
         const data = await res.json();
-        if (!data?.data) {
-          throw new Error("Unable to restore analysis");
-        }
         setAnalyseResult(data.data);
-        setRestoreError("");
       } catch (error) {
-        setRestoreError(RESTORE_ANALYSIS_ERROR);
-        console.error("Unable to load final result.");
-      } finally {
-        setLoadingResult(false);
+        console.error("Error :", error);
       }
     };
 
     fetchPlans();
-  }, [analysisId, token]);
+  }, []);
   
 
   const originalResume = analyseResult?.posted_resume ;
   
   const optimized = analyseResult?.optimized_resume_analysis;
 
-  const originalScore = toScoreNumber(analyseResult?.score);
-  const optimizedScore = toScoreNumber(optimized?.overall_ats_score);
+  const originalScore = analyseResult?.score || 0;
+  const optimizedScore = optimized?.overall_ats_score || 0;
 
   const optimizedBreakdown = optimized?.scoring_breakdown || {};
 
@@ -1418,53 +1082,45 @@ function FinalResult({ restart, goMobile, onReview }) {
   const finalScoreBreakdown = [
     {
       label: "Keyword match",
-      value: optimizedBreakdown.keyword_match
+      value: optimizedBreakdown.keyword_match || 0
     },
     {
       label: "Skills alignment",
-      value: optimizedBreakdown.skills_alignment
+      value: optimizedBreakdown.skills_alignment || 0
     },
     {
       label: "Experience relevance",
-      value: optimizedBreakdown.experience_relevance
+      value: optimizedBreakdown.experience_relevance || 0
     },
     {
       label: "Resume structure",
-      value: optimizedBreakdown.resume_structure
+      value: optimizedBreakdown.resume_structure || 0
     },
     {
       label: "ATS readability",
-      value: optimizedBreakdown.ats_readability
+      value: optimizedBreakdown.ats_readability || 0
     },
     {
       label: "Achievement quality",
-      value: optimizedBreakdown.achievement_quality
+      value: optimizedBreakdown.achievement_quality || 0
     }
   ];
 
-  if (loadingResult) {
-    return <div className="max-w-7xl mx-auto py-20 px-4 text-center"><h2 className="text-3xl font-black">Restoring your analysis...</h2></div>;
-  }
-
-  if (restoreError) {
-    return <div className="max-w-7xl mx-auto py-20 px-4 text-center"><h2 className="text-3xl font-black">{restoreError}</h2><Button onClick={restart} className="mt-6 px-6 py-4">Run the scan again</Button></div>;
-  }
-
   const copyResume = async () => { try { 
-    safeTrackMeta("copyResumeText", { method: "google", location: "site_CVMatchApp" }, true);
+    trackMeta("copyResumeText", { method: "google", location: "site_CVMatchApp" }, true);
     await navigator.clipboard.writeText(optimizedResume); } catch (error) { console.warn("Clipboard unavailable in this preview environment", error); }
   };
   const downloadResumeText = () => { 
-    safeTrackMeta("downloadResumeText", { method: "google", location: "site_CVMatchApp" }, true);
+    trackMeta("downloadResumeText", { method: "google", location: "site_CVMatchApp" }, true);
     
-    const blob = new Blob([buildResumeDownloadText(analyseResult)], { type: "text/plain;charset=utf-8" }); 
+    const blob = new Blob([optimizedResume], { type: "text/plain;charset=utf-8" }); 
     const url = URL.createObjectURL(blob); 
     const anchor = document.createElement("a"); anchor.href = url; anchor.download = "cvmatch-ai-optimized-resume.txt"; anchor.click(); 
     URL.revokeObjectURL(url); setTimeout(onReview, 600); 
   }; 
 
   const downloadResume = async () =>  { 
-    safeTrackMeta("downloadResumePDF", { method: "google", location: "site_CVMatchApp" }, true);
+    trackMeta("downloadResumePDF", { method: "google", location: "site_CVMatchApp" }, true);
 
     const headers = { Accept: "application/json", };
     if (token) {
@@ -1495,37 +1151,7 @@ function FinalResult({ restart, goMobile, onReview }) {
     URL.revokeObjectURL(url); setTimeout(onReview, 600); 
   }; 
 
-  const downloadCoverLetter = async () =>  { 
-    safeTrackMeta("downloadCoverLetter", { method: "google", location: "site_CVMatchApp" }, true);
-
-    const headers = { Accept: "text/plain", };
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
-    const response = await fetch(`${API_URL}/v1/analyses/${analyseResult?.id}/download/cover-letter`, {
-      method: "GET",
-      credentials: "include", 
-      headers
-    });
-
-    if ( response.status === 401 ) {
-      localStorage.setItem("redirect", "app" );
-      connectWithGoogle(token);
-      return;
-    }
-
-    if (!response.ok) {
-      throw new Error("Failed to download cover letter");
-    }
-
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob); 
-    const anchor = document.createElement("a"); anchor.href = url; anchor.download = "cvmatch-ai-cover-letter.txt"; anchor.click();  anchor.remove();
-
-    URL.revokeObjectURL(url); setTimeout(onReview, 600); 
-  }; 
-
-  return <div className="max-w-7xl mx-auto py-10 px-4"><div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6"><div><p className="text-sm font-black uppercase tracking-widest text-cyan-500">Unlocked result</p><h2 className="text-4xl md:text-5xl font-black mt-2">Your optimized resume package is ready.</h2><p className="mt-2 text-slate-600">We improved your resume structure, ATS readability, and role-specific presentation without inventing unsupported experience.</p><p className="mt-2 text-sm font-black text-emerald-600">New match score: {formatScore(optimizedScore)}</p><p className="mt-1 text-sm text-slate-500">Your report is saved to your account.</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" className="rounded-2xl border-slate-200 px-4 py-3" onClick={copyResume}><Icon name="copy" size={16} className="mr-2"/>Copy</Button><PremiumButton onClick={downloadResumeText} className="px-4 py-3"><Icon name="download" size={16} className="mr-2"/>Download Resume TXT</PremiumButton><PremiumButton onClick={downloadResume} variant="gold" className="px-4 py-3"><Icon name="file" size={16} className="mr-2"/>Download Resume PDF</PremiumButton><PremiumButton onClick={downloadCoverLetter} className="px-4 py-3"><Icon name="download" size={16} className="mr-2"/>Download Cover Letter</PremiumButton></div></div>
+  return <div className="max-w-7xl mx-auto py-10 px-4"><div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6"><div><p className="text-sm font-black uppercase tracking-widest text-cyan-500">Unlocked result</p><h2 className="text-4xl md:text-5xl font-black mt-2">Your optimized resume package is ready.</h2><p className="mt-2 text-slate-600">We improved your resume structure, ATS readability, and role-specific presentation without inventing unsupported experience.</p><p className="mt-2 text-sm font-black text-emerald-600">New match score: {optimizedScore}%</p><p className="mt-1 text-sm text-slate-500">Your report is saved to your account.</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" className="rounded-2xl border-slate-200 px-4 py-3" onClick={copyResume}><Icon name="copy" size={16} className="mr-2"/>Copy</Button><PremiumButton onClick={downloadResumeText} className="px-4 py-3"><Icon name="download" size={16} className="mr-2"/>Download TXT</PremiumButton><PremiumButton onClick={downloadResume} variant="gold" className="px-4 py-3"><Icon name="file" size={16} className="mr-2"/>Download PDF</PremiumButton></div></div>
       <div className="grid lg:grid-cols-[1fr_0.55fr] gap-6">
         <div className="space-y-6">
           <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white"><CardContent className="p-7"><h3 className="font-black text-2xl mb-5">Premium Resume PDF Preview</h3><div className="rounded-3xl border border-slate-200 bg-white p-8 shadow-inner"><pre className="whitespace-pre-wrap text-sm leading-5 font-sans text-slate-700">{optimizedResume}</pre></div></CardContent></Card>
@@ -1538,7 +1164,7 @@ function FinalResult({ restart, goMobile, onReview }) {
           <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
             <CardContent className="p-7">
               <h3 className="font-black text-2xl">New Score</h3>
-              <div className="text-7xl font-black mt-4" style={{ color: COLORS.success }}>{formatScore(optimizedScore)}</div>
+              <div className="text-7xl font-black mt-4" style={{ color: COLORS.success }}>{optimizedScore}%</div>
               <Progress value={optimizedScore} color={COLORS.success}/>
               <div className="grid gap-3 mt-6">{finalScoreBreakdown.map((item) => <ScoreBar key={item.label} label={item.label} value={item.value}/>)}</div>
             </CardContent>
@@ -1564,8 +1190,7 @@ function FinalResult({ restart, goMobile, onReview }) {
           {optimized?.keywords_added?.length > 0 && (
             <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
               <CardContent className="p-7">
-                <h3 className="font-black text-xl">Supported keywords strengthened</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-500">These keywords are based on your existing resume content and were strengthened where supported.</p>
+                <h3 className="font-black text-xl">Supported keywords strengthened</h3><p className="mt-1 text-sm leading-6 text-slate-500">These keywords are based on your existing resume content and were strengthened where supported.</p>
 
                 <div className="flex flex-wrap gap-2 mt-4">
                   {optimized.keywords_added.map((keyword) => (
@@ -1583,8 +1208,7 @@ function FinalResult({ restart, goMobile, onReview }) {
           {optimized?.remaining_weaknesses?.length > 0 && (
           <Card className="rounded-[2rem] shadow-sm border-slate-100 bg-white">
             <CardContent className="p-7">
-              <h3 className="font-black text-xl">Remaining weaknesses</h3>
-              <p className="mt-2 text-sm leading-6 text-slate-500">Honest role-fit notes to help you understand what the optimized resume can and cannot fix.</p>
+              <h3 className="font-black text-xl">Remaining weaknesses</h3><p className="mt-1 text-sm leading-6 text-slate-500">Honest role-fit notes to help you understand what the optimized resume can and cannot fix.</p>
 
               <div className="mt-4 space-y-3">
                 {optimized.remaining_weaknesses.map((item, index) => (
@@ -1618,33 +1242,23 @@ function FinalResult({ restart, goMobile, onReview }) {
     </div>;
 }
 
-function CVMatchApp() {
+function CVMatchApp({ setActiveAppStep }) {
   const pollIntervalRef = useRef(null);
-  const pollTimeoutRef = useRef(null);
-  const pendingUnlockAfterLoginRef = useRef(false);
-  const unlockInFlightRef = useRef(false);
   const [showErrorModal, setShowErrorModal] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const {refreshUser ,connectWithGoogle ,setMode , user, credits} = useAuth();
+  const {refreshUser ,connectWithGoogle ,setMode , user} = useAuth();
   const [current, setCurrent] = useState(() => { return Number(localStorage.getItem("cvmatch_current")) || 0;});
   const [resumeUploading, setResumeUploading] = useState(false);
   const [resumeFile, setResumeFile] = useState(null);
   const [resumeName, setResumeName] = useState(() => { return localStorage.getItem("cvmatch_resume_name") || "";});
-  const [jobText, setJobText] = useState("");
+  const [jobText, setJobText] = useState(() => { return localStorage.getItem("cvmatch_job_text") || "";});
   const [resumeId, setResumeId] = useState( localStorage.getItem("cvmatch_resume_id") || null);
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
-  const [unlockFlowStatus, setUnlockFlowStatus] = useState("");
-  const [unlockError, setUnlockError] = useState("");
-  const [freeScanLimit, setFreeScanLimit] = useState(null);
-
-  if (typeof window !== "undefined") {
-    localStorage.removeItem("history_analysisId");
-  }
 
   useEffect(() => {
     const savedStep = Number(localStorage.getItem("cvmatch_current"));
-    if (savedStep === 2 && user?.current_analyse_done !== null && user?.current_analyse_done !== undefined) {
+    if ( savedStep === 2 && user?.current_analyse_done != null ) {
       const analysisId = user.current_analyse_done;
       localStorage.setItem("analysisId", analysisId);
       pollAnalysisStatus(analysisId);
@@ -1652,15 +1266,10 @@ function CVMatchApp() {
   }, [user]);
  
   
-  useEffect(() => {
-    
-    localStorage.removeItem("redirect");
-    localStorage.removeItem("cvmatch_job_text");
-  }, []);
+  useEffect(() => { localStorage.removeItem("redirect");}, []);
   useEffect(() => { localStorage.setItem("cvmatch_current", current);}, [current]);
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent("cvmatch:active-step", { detail: { current } }));
-  }, [current]);
+  useEffect(() => { setActiveAppStep?.(current);}, [current, setActiveAppStep]);
+  useEffect(() => { localStorage.setItem("cvmatch_job_text", jobText);}, [jobText]);
   useEffect(() => { localStorage.setItem("cvmatch_resume_name", resumeName);}, [resumeName]);
 
   const token = localStorage.getItem("token");
@@ -1673,153 +1282,14 @@ function CVMatchApp() {
     localStorage.removeItem("cvmatch_resume_id");
     localStorage.removeItem("cvmatch_resume_name");
     localStorage.removeItem("analysisId");
-    setFreeScanLimit(null);
 
     setCurrent(0);
     setResumeName("");
-    setJobText("");
     setResumeFile(null);
     
   };
   const goMobile = () => setMobileModalOpen(true);
   const progress = useMemo(() => ((current + 1) / 6) * 100, [current]);
-
-  const showUnlockError = (message = "Unable to unlock your resume. Please try again.") => {
-    setUnlockError(message);
-    setErrorMessage(message);
-    setShowErrorModal(true);
-  };
-
-  const stopAnalysisPolling = () => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-    if (pollTimeoutRef.current) {
-      clearTimeout(pollTimeoutRef.current);
-      pollTimeoutRef.current = null;
-    }
-  };
-
-  useEffect(() => () => stopAnalysisPolling(), []);
-
-  const preserveCurrentAnalysis = () => {
-    const analysisId = getStoredAnalysisId();
-    if (!analysisId) {
-      showUnlockError(RESTORE_ANALYSIS_ERROR);
-      return null;
-    }
-    persistAnalysisIdForUnlock(analysisId);
-    return analysisId;
-  };
-
-  const fetchAnalysisById = async (analysisId) => {
-    const response = await fetch(`${API_URL}/v1/analyses/${analysisId}`, {
-      credentials: "include",
-      headers: buildAppAuthHeaders(),
-    });
-    if (response.status === 401) {
-      const error = new Error("Unauthorized");
-      error.status = 401;
-      throw error;
-    }
-    if (!response.ok) {
-      throw new Error("Unable to restore analysis");
-    }
-    const payload = await response.json();
-    if (!payload?.data) {
-      throw new Error("Unable to restore analysis");
-    }
-    return payload.data;
-  };
-
-  const fetchCurrentUserForUnlock = async () => {
-    const token = localStorage.getItem("token");
-    if (!token) return null;
-    const response = await fetch(`${API_URL}/v1/auth/me`, {
-      credentials: "include",
-      headers: buildAppAuthHeaders(),
-    });
-    if (response.status === 401) {
-      localStorage.setItem("redirect", "app");
-      connectWithGoogle(token);
-      return null;
-    }
-    if (!response.ok) return user;
-    const data = await response.json();
-    return data?.data || user;
-  };
-
-  const getSingleCreditPlan = async () => {
-    const response = await fetch(`${API_URL}/v1/credit-plans`, { credentials: "include" });
-    if (!response.ok) {
-      throw new Error("Unable to load credit plan");
-    }
-    const data = await response.json();
-    const plans = Array.isArray(data?.data) ? data.data : [];
-    const plan = plans.find((item) => Number(item?.credits) === 1) || plans[0];
-    const ui = plan?.custom_ui || plan;
-    const pricingDisplay = getPlanPricingDisplay({
-      price: ui?.price || plan?.price,
-      credits: plan?.credits ?? ui?.credits,
-    }, getPricingConfig(data));
-    const selectedPlan = {
-      id: ui?.id || plan?.id,
-      name: ui?.name || plan?.name,
-      price: pricingDisplay.price,
-      credits: plan?.credits ?? ui?.credits,
-    };
-    if (!selectedPlan.id) {
-      throw new Error("Credit plan unavailable");
-    }
-    localStorage.setItem("selected_plan", JSON.stringify(selectedPlan));
-    return selectedPlan;
-  };
-
-  const startStripeCheckoutForUnlock = async (analysisId) => {
-    persistAnalysisIdForUnlock(analysisId);
-    const plan = await getSingleCreditPlan();
-    const formData = new FormData();
-    formData.append("product_id", plan.id);
-    const response = await fetch(`${API_URL}/v1/payments/stripe/session`, {
-      method: "POST",
-      body: formData,
-      credentials: "include",
-      headers: buildAppAuthHeaders(),
-    });
-    if (response.status === 401) {
-      localStorage.setItem("redirect", "app");
-      connectWithGoogle(localStorage.getItem("token"));
-      return false;
-    }
-    if (!response.ok) {
-      throw new Error("Unable to start checkout");
-    }
-    const payload = await response.json();
-    const checkoutUrl = payload?.data?.url || payload?.url;
-    if (!checkoutUrl) {
-      throw new Error("Stripe checkout URL missing");
-    }
-    const sessionId = getStripeSessionId(payload);
-    const checkoutPayload = {
-      location: "post_analysis_paywall",
-      funnel_step: "checkout_started",
-      plan_id: plan.id,
-      value: plan.value || plan.amount || plan.price,
-      currency: "USD",
-    };
-    if (sessionId && typeof window !== "undefined") {
-      const checkoutKey = `cvmatch_checkout_started_${sessionId}`;
-      if (!window.sessionStorage.getItem(checkoutKey)) {
-        safeTrackMeta("checkout_started", checkoutPayload, true);
-        window.sessionStorage.setItem(checkoutKey, "1");
-      }
-    } else {
-      safeTrackMeta("checkout_started", checkoutPayload, true);
-    }
-    window.location.href = checkoutUrl;
-    return true;
-  };
 
   const storeResume = async () => {
     trackMeta("uploadResume", { method: "google", location: "site_CVMatchApp" }, true);
@@ -1873,8 +1343,8 @@ function CVMatchApp() {
         setResumeId(uploadedResumeId);
         localStorage.setItem( "cvmatch_resume_id", uploadedResumeId);
       }
-    } catch {
-      console.error("Resume upload failed.");
+    } catch (error) {
+      console.error("upload error:", error);
       previous();
     } finally {
       setResumeUploading(false);
@@ -1882,13 +1352,12 @@ function CVMatchApp() {
   };
 
   const analyzeResume = async () => {
-    safeTrackMeta("uploadAnalyse", { method: "google", location: "site_CVMatchApp" }, true);
+    trackMeta("uploadAnalyse", { method: "google", location: "site_CVMatchApp" }, true);
     try {
 
       const currentResumeId = resumeId || localStorage.getItem("cvmatch_resume_id");
       const guestToken = localStorage.getItem("guest_token");
       const token = localStorage.getItem("token");
-      setFreeScanLimit(null);
 
       const headers = { Accept: "application/json", };
       if (token) {
@@ -1914,50 +1383,24 @@ function CVMatchApp() {
         return;
       }
       const data = await response.json();
-      if (data?.data?.free_scan_limit_reached) {
-        const limitAnalysisId = data.data.analysis_id || data.data.id;
-        if (limitAnalysisId) {
-          persistAnalysisIdForUnlock(limitAnalysisId);
-        }
-        if (!token && limitAnalysisId) {
-          localStorage.setItem(GUEST_FREE_SCAN_USED_KEY, "1");
-          localStorage.setItem(GUEST_FREE_SCAN_ANALYSIS_KEY, limitAnalysisId);
-        }
-        safeTrackMeta("free_scan_limit_reached", { location: "free_scan", user_type: token ? "authenticated" : "guest" }, true);
-        setFreeScanLimit({
-          ...data.data,
-          message: token ? (data.data.message || AUTH_FREE_SCAN_LIMIT_MESSAGE) : GUEST_FREE_SCAN_LIMIT_MESSAGE,
-        });
-        setCurrent(3);
-        return;
-      }
       const analysisId = data.data.id;
       localStorage.setItem('analysisId',analysisId)
-      if (!token) {
-        localStorage.setItem(GUEST_FREE_SCAN_USED_KEY, "1");
-        localStorage.setItem(GUEST_FREE_SCAN_ANALYSIS_KEY, analysisId);
-      }
       await refreshUser();
       next();
-      if (data?.data?.status === "completed") {
-        next();
-        return;
-      }
       // start polling
       pollAnalysisStatus(analysisId);
 
-    } catch {
-      console.error("Analysis request failed.");
+    } catch (error) {
+      console.error("Analysis error:", error);
     }
   };
 
   const unlockAnalysis = async () => {
-    safeTrackMeta("unlockFullResume", { method: "google", location: "site_CVMatchApp" }, true);
+    trackMeta("unlockFullResume", { method: "google", location: "site_CVMatchApp" }, true);
 
     try {
 
-      const analysisId = preserveCurrentAnalysis();
-      if (!analysisId) return false;
+      const analysisId = localStorage.getItem("analysisId");
       const token = localStorage.getItem("token");
       const headers = { Accept: "application/json", };
       if (token) {
@@ -1972,210 +1415,93 @@ function CVMatchApp() {
       if ( response.status === 401 ) {
         localStorage.setItem("redirect", "app" );
         connectWithGoogle(token);
-        return false;
+        return;
       }
       const data = await response.json();
 
       if (response.ok) {
-        const returnedAnalysisId = payloadAnalysisId(data, analysisId);
-        persistAnalysisIdForUnlock(returnedAnalysisId);
-
-        if (isFullGenerationProcessing(data) || response.status === 202) {
-          trackAnalysisEventOnce("full_generation_started", returnedAnalysisId, { location: "post_analysis_paywall", status: apiData(data).full_generation_status || "processing" });
-          setUnlockFlowStatus("unlocking");
-          setUnlockError("");
-          const pollResult = await pollAnalysisStatus(returnedAnalysisId, { mode: "full" });
-          return pollResult?.status === "completed";
-        }
-
-        if (isFullGenerationFailed(data)) {
-          setUnlockError(data?.data?.message || data?.message || FULL_GENERATION_ERROR);
-          trackAnalysisEventOnce("full_generation_failed", returnedAnalysisId, { location: "post_analysis_paywall", status: "failed" });
-          return false;
-        }
-
-        safeTrackMeta("unlock_succeeded", { location: "report_unlock", status: "succeeded" }, true);
+        trackMeta("unlock_succeeded", { location: "report_unlock", status: "succeeded" }, true);
+        trackResumeUnlocked(analysisId);
         await refreshUser();
-        trackAnalysisEventOnce("full_generation_completed", returnedAnalysisId, { location: "post_analysis_paywall", status: "completed" });
-        safeTrackMeta("resume_unlocked", { location: "post_analysis_paywall", funnel_step: "resume_unlocked" }, true);
-        setCurrent(4);
-        return true;
+        next() ;
       }else{
-        safeTrackMeta("unlock_failed", { location: "report_unlock", status: "failed" }, true);
-        showUnlockError(data?.message || FULL_GENERATION_ERROR);
+        // trackMeta("unlock_failed", { location: "report_unlock", status: "failed" }, true);
+        setErrorMessage(
+          data?.message ||
+          "You don't have enough credits."
+        );
+        // setShowErrorModal(true);
+        localStorage.setItem("redirect","app") ;
+        window.location.replace('/#pricing')
 
-        return false;
+        return;
       }
 
-    } catch {
-      console.error("Unlock request failed.");
-      showUnlockError(FULL_GENERATION_ERROR);
-      return false;
+    } catch (error) {
+      console.error("Analysis error:", error);
     }
   };
 
-  const handlePrimaryUnlock = async (ctaLocation = "free_report") => {
-    if (unlockInFlightRef.current) return;
-    const analysisId = preserveCurrentAnalysis();
-    if (!analysisId) return;
-    setUnlockError("");
-
-    const token = localStorage.getItem("token");
-    if (!token || user?.is_guest) {
-      safeTrackMeta("unlock_cta_clicked", { location: ctaLocation, status: "google_signin_required" }, true);
-      sessionStorage.setItem(PENDING_UNLOCK_KEY, "1");
-      persistAnalysisIdForUnlock(analysisId);
-      connectWithGoogle();
-      return;
+  const pollAnalysisStatus = async (analysisId) => {
+    // STOP OLD POLLING BEFORE STARTING NEW ONE
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
     }
 
-    unlockInFlightRef.current = true;
-    try {
-      const currentUser = await fetchCurrentUserForUnlock();
-      if (!currentUser) return;
-      const remainingCredits = getCreditRemaining(currentUser?.credits ? currentUser : { credits });
-      if (remainingCredits > 0) {
-        safeTrackMeta("unlock_cta_clicked", { location: ctaLocation, status: "has_credit" }, true);
-        setUnlockFlowStatus("unlocking");
-        await unlockAnalysis();
-      } else {
-        safeTrackMeta("unlock_cta_clicked", { location: ctaLocation, status: "needs_credit" }, true);
-        setUnlockFlowStatus("checkout");
-        await startStripeCheckoutForUnlock(analysisId);
-      }
-    } catch {
-      showUnlockError(FULL_GENERATION_ERROR);
-    } finally {
-      unlockInFlightRef.current = false;
-      setUnlockFlowStatus("");
-    }
-  };
-
-  useEffect(() => {
-    if (current !== 3 || !token || !user || user?.is_guest || pendingUnlockAfterLoginRef.current) return;
-    if (typeof window === "undefined" || window.sessionStorage.getItem(PENDING_UNLOCK_KEY) !== "1") return;
-    pendingUnlockAfterLoginRef.current = true;
-    window.sessionStorage.removeItem(PENDING_UNLOCK_KEY);
-    handlePrimaryUnlock("post_login_resume");
-  }, [current, token, user]);
-
-  const pollAnalysisStatus = (analysisId, options = {}) => {
-    stopAnalysisPolling();
-    const mode = options.mode || "scan";
-    let requestActive = false;
-    let resolved = false;
-
-    return new Promise((resolve) => {
-      const finish = (result) => {
-        if (resolved) return;
-        resolved = true;
-        stopAnalysisPolling();
-        resolve(result);
-      };
-
-      const checkStatus = async () => {
-        if (requestActive || resolved) return;
-        requestActive = true;
-
+    pollIntervalRef.current =  setInterval(async () => {
       try {
+        const guestToken = localStorage.getItem("guest_token");
         const token = localStorage.getItem("token");
-        const data = await fetchAnalysisById(analysisId);
-        const activeAnalysisId = payloadAnalysisId(data, analysisId);
-        persistAnalysisIdForUnlock(activeAnalysisId);
-
-        if (mode === "full") {
-          if (isFullGenerationComplete(data)) {
-            setUnlockFlowStatus("");
-            setUnlockError("");
-            safeTrackMeta("unlock_succeeded", { location: "report_unlock", status: "succeeded" }, true);
-            try { await refreshUser(); } catch (error) { console.warn(error); }
-            trackAnalysisEventOnce("full_generation_completed", activeAnalysisId, { location: "post_analysis_paywall", status: "completed" });
-            safeTrackMeta("resume_unlocked", { location: "post_analysis_paywall", funnel_step: "resume_unlocked" }, true);
-            setCurrent(4);
-            finish({ status: "completed", data });
-            return;
-          }
-
-          if (isFullGenerationFailed(data)) {
-            setUnlockFlowStatus("");
-            setUnlockError(data?.message || FULL_GENERATION_ERROR);
-            trackAnalysisEventOnce("full_generation_failed", activeAnalysisId, { location: "post_analysis_paywall", status: "failed" });
-            finish({ status: "failed", data });
-            return;
-          }
-        } else if (data.status === "completed") {
-          safeTrackMeta("scan_completed", { location: "analysis", status: "completed" }, true);
-          next();
-          finish({ status: "completed", data });
-          return;
-        } else if (data.status === "failed") {
-          finish({ status: "failed", data });
-          return;
+        
+        const headers = { Accept: "application/json", };
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        } else if (guestToken) {
+          headers["X-Guest-Token"] = guestToken;
         }
-      } catch (error) {
-        const token = localStorage.getItem("token");
-        if (error?.status === 401) {
+       
+        const response = await fetch(
+          `${API_URL}/v1/analyses/${analysisId}`,
+          {
+            credentials: "include",
+            headers
+          }
+        );
+
+        if ( response.status === 401 ) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
           previous();
           if (token){ localStorage.setItem("redirect", "app" ); connectWithGoogle(token);}
-        } else {
-          console.error("Analysis polling failed.");
-          if (mode === "full") {
-            setUnlockFlowStatus("");
-            setUnlockError(FULL_GENERATION_ERROR);
-          }
+          return;
         }
-        finish({ status: "error" });
-      } finally {
-        requestActive = false;
-      }
-      };
 
-      pollIntervalRef.current = setInterval(checkStatus, FULL_GENERATION_POLL_INTERVAL_MS);
-      if (mode === "full") {
-        pollTimeoutRef.current = setTimeout(() => {
-          setUnlockFlowStatus("");
-          setUnlockError(FULL_GENERATION_TIMEOUT_MESSAGE);
-          finish({ status: "timeout" });
-        }, FULL_GENERATION_TIMEOUT_MS);
-      }
-      checkStatus();
-    });
-  };
+        const data = await response.json();
+        console.log("POLL STATUS:", data.data.status);
 
-  useEffect(() => {
-    if (current !== 3 || pollIntervalRef.current) return;
-    const analysisId = getStoredAnalysisId();
-    if (!analysisId) return;
-
-    let active = true;
-    const restoreFullGeneration = async () => {
-      try {
-        const data = await fetchAnalysisById(analysisId);
-        if (!active) return;
-        const activeAnalysisId = payloadAnalysisId(data, analysisId);
-        if (isFullGenerationProcessing(data)) {
-          persistAnalysisIdForUnlock(activeAnalysisId);
-          setUnlockFlowStatus("unlocking");
-          setUnlockError("");
-          pollAnalysisStatus(activeAnalysisId, { mode: "full" });
-        } else if (isFullGenerationComplete(data)) {
-          persistAnalysisIdForUnlock(activeAnalysisId);
-          setCurrent(4);
-        } else if (isFullGenerationFailed(data)) {
-          setUnlockFlowStatus("");
-          setUnlockError(data?.message || FULL_GENERATION_ERROR);
+        // FINISHED
+        if (data.data.status === "completed") {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+          trackMeta("scan_completed", { location: "analysis", status: "completed" }, true);
+          next();
         }
+
+        // FAILED
+        if (data.data.status === "failed") {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+          console.log("Analysis failed");
+        }
+
       } catch (error) {
-        if (error?.status === 401 && token) {
-          localStorage.setItem("redirect", "app");
-          connectWithGoogle(token);
-        }
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+        console.error("Polling error:", error);
       }
-    };
 
-    restoreFullGeneration();
-    return () => { active = false; };
-  }, [current, token, user?.is_guest]);
+    }, 10000); // every 2 sec
+  };
   
   if (token && user && !user?.is_guest && !user?.has_accepted_terms) return  <ConsentPage /> ;
 
@@ -2200,7 +1526,7 @@ function CVMatchApp() {
             {/* {current === 2 && <Analysis/>}  */}
             {current === 2 && <CVAnalysisLoader/>} 
             
-            {current === 3 && <FreeResult restart={restart} next={handlePrimaryUnlock} goMobile={goMobile} unlockFlowStatus={unlockFlowStatus} unlockError={unlockError} freeScanLimit={freeScanLimit}/>} 
+            {current === 3 && <FreeResult restart={restart} next={unlockAnalysis} goMobile={goMobile}/>} 
             {current === 4 && <FinalResult restart={restart} goMobile={goMobile} onReview={() => setReviewModalOpen(true)}/>}
           </motion.div>
         </AnimatePresence>
@@ -2215,6 +1541,7 @@ function CVMatchApp() {
 function CreditStat({title,value}) {
   return <div className="rounded-[2rem] bg-white p-7 shadow-xl"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700 font-black">◆</div><p className="mt-6 text-sm font-black text-slate-500">{title}</p><div className="mt-2 text-6xl font-black">{value}</div><p className="mt-2 text-slate-500">Resume credits</p></div>;
 }
+
 
 function ViewAnalyse() {
   const { setMode } = useAuth();
@@ -2257,10 +1584,12 @@ function Dashboard() {
   const history =  user.transactions;
   const analyses = user.analyses ?? [];
 
+  // Open a past analysis: reuse the existing app-flow that resumes into the
+  // result view by reading analysisId + cvmatch_current from localStorage.
   const openAnalysis = (a) => {
     const id = a?.uuid || a?.id;
     if (!id) return;
-    localStorage.setItem("history_analysisId", id);
+    localStorage.setItem("analysisId", id);
     // localStorage.setItem("cvmatch_current", "4");
     localStorage.setItem("changemode", "viewanalyse");
     window.location.replace("/");
@@ -2334,49 +1663,7 @@ function Dashboard() {
       </div>
     </div>
     <div className="mt-8 grid gap-6 lg:grid-cols-[1fr_.7fr]">
-      <div className="rounded-[2rem] bg-white p-7 shadow-xl">
-          <h2 className="text-2xl font-black">My analyses</h2>
-          {analyses.length > 0 ? (
-            <div className="mt-6 space-y-3">
-              {analyses.map((a) => (
-                <div key={a.id} className="flex flex-col gap-3 rounded-2xl bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-black">Resume analysis</p>
-                      {a.is_full_unlocked ? (
-                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-700">Unlocked</span>
-                      ) : (
-                        <span className="rounded-full bg-slate-200 px-3 py-1 text-xs font-black text-slate-600">Locked</span>
-                      )}
-                      {typeof a.score === "number" && a.score > 0 && (
-                        <span className="rounded-full bg-cyan-100 px-3 py-1 text-xs font-black text-cyan-700">Score {a.score}</span>
-                      )}
-                     
-                      {typeof a?.optimized_resume_analysis.overall_ats_score === "number" && a.optimized_resume_analysis.overall_ats_score > 0 && (
-                        <span className="rounded-full bg-cyan-100 px-3 py-1 text-xs font-black text-cyan-700">Score {a.optimized_resume_analysis.overall_ats_score}</span>
-                      )}
-                    </div>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {a.status}{a.created_at ? " · " + new Date(a.created_at).toLocaleDateString() : ""}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => openAnalysis(a)}
-                    className="shrink-0 rounded-2xl bg-slate-950 px-5 py-3 font-black text-white transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0"
-                  >
-                    View analysis
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="mt-6 flex flex-col items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-slate-50 px-6 py-12 text-center">
-              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-white shadow"><span className="text-3xl">📄</span></div>
-              <h3 className="text-lg font-bold text-slate-800">No analyses yet</h3>
-              <p className="mt-2 max-w-sm text-sm text-slate-500">Your resume analyses will appear here. Optimize a resume to get started.</p>
-            </div>
-          )}
-      </div>
+      {/* <div className="rounded-[2rem] bg-white p-7 shadow-xl"><h2 className="text-2xl font-black">Credit history</h2><div className="mt-6 space-y-3">{history.map((h,i)=><div key={i} className="rounded-2xl bg-slate-50 p-4"><p className="font-black">{h.label}</p><p className="text-sm text-slate-500">{h.detail}</p></div>)}</div></div> */}
       <div className="rounded-[2rem] bg-white p-7 shadow-xl">
         <h2 className="text-2xl font-black">Credit history</h2>
 
@@ -2411,6 +1698,45 @@ function Dashboard() {
       </div>
       <div className="rounded-[2rem] bg-slate-950 p-7 text-white shadow-xl"><h2 className="text-2xl font-black">Ready to optimize?</h2><p className="mt-2 text-white/55">Each unlocked resume consumes 1 credit. You have <b className="text-cyan-300">{credits?.remaining ?? 0}</b> credits left.</p><div className="mt-6 rounded-3xl bg-white/5 p-5"><p className="text-white/50">Usage rule</p><p className="text-3xl font-black">1 resume = 1 credit</p></div><PremiumButton onClick={()=>go("app", setMode)} className="mt-6 w-full">Optimize a resume</PremiumButton><button onClick={()=>{localStorage.setItem("redirect","app") ;  window.location.replace("/#pricing"); }}  className="mt-3 w-full rounded-2xl border border-white/20 py-4 font-black">Buy more credits</button></div>
     </div>
+    <div className="mt-8 rounded-[2rem] bg-white p-7 shadow-xl">
+      <h2 className="text-2xl font-black">My analyses</h2>
+      {analyses.length > 0 ? (
+        <div className="mt-6 space-y-3">
+          {analyses.map((a) => (
+            <div key={a.id} className="flex flex-col gap-3 rounded-2xl bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-black">Resume analysis</p>
+                  {a.is_full_unlocked ? (
+                    <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-700">Unlocked</span>
+                  ) : (
+                    <span className="rounded-full bg-slate-200 px-3 py-1 text-xs font-black text-slate-600">Locked</span>
+                  )}
+                  {typeof a.score === "number" && a.score > 0 && (
+                    <span className="rounded-full bg-cyan-100 px-3 py-1 text-xs font-black text-cyan-700">Score {a.score}</span>
+                  )}
+                </div>
+                <p className="mt-1 text-sm text-slate-500">
+                  {a.status}{a.created_at ? " · " + new Date(a.created_at).toLocaleDateString() : ""}
+                </p>
+              </div>
+              <button
+                onClick={() => openAnalysis(a)}
+                className="shrink-0 rounded-2xl bg-slate-950 px-5 py-3 font-black text-white transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0"
+              >
+                View analysis
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-6 flex flex-col items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-slate-50 px-6 py-12 text-center">
+          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-white shadow"><span className="text-3xl">📄</span></div>
+          <h3 className="text-lg font-bold text-slate-800">No analyses yet</h3>
+          <p className="mt-2 max-w-sm text-sm text-slate-500">Your resume analyses will appear here. Optimize a resume to get started.</p>
+        </div>
+      )}
+    </div>
   </main>;
 }
 
@@ -2437,7 +1763,7 @@ function AuthCallback({pathname}) {
 
         const token = new URLSearchParams( window.location.search ).get("token");
         if (!token) {
-          console.error("No token found.");
+          console.error("No token found");
           setMode("landing") ;
           window.location.replace("/");
           return;
@@ -2453,10 +1779,13 @@ function AuthCallback({pathname}) {
           await sleep(1500);
         }
 
-      } catch {
-        console.error("Auth callback failed.");
+      } catch (error) {
+        console.error("Auth callback error:", error);
         if (pathname === "/auth/callback"){
           setStatus("Authentication failed");
+        }
+        if (pathname === "/payement/callback"){
+          setStatus("Paiement failed");
         }
         await sleep(2500);
       }
@@ -2474,16 +1803,11 @@ function App() {
   
   const { mode, setMode, user, credits, refreshUser } = useAuth();
   const hasRefreshedFromChangeMode = useRef(false);
-  const [activeAppStep, setActiveAppStep] = useState(() => (
-    typeof window !== "undefined" ? Number(window.localStorage.getItem("cvmatch_current")) || 0 : 0
-  ));
+  const [activeAppStep, setActiveAppStep] = useState(null);
   const location = useLocation();
   // const startApp = () =>{ trackMeta("getFreeScore", { method: "google", location: "site_header_or_landing" }, true); go("app", setMode);}
   const startApp = () =>{ trackMeta("getFreeScore", { method: "google", location: "site_header_or_landing" }, true); localStorage.setItem("changemode","app") ;  window.location.replace("/"); }
   const goHome = () => { window.location.replace("/");}
-  const scrollToUnlockCta = () => {
-    document.getElementById("post-analysis-unlock-cta")?.scrollIntoView({ behavior: "smooth", block: "center" });
-  };
   const total=5, used=2, credit=total-used;
 
   
@@ -2492,6 +1816,11 @@ function App() {
   const pathname = location.pathname;
   const hash = location.hash;
   const params = new URLSearchParams(location.search);
+
+
+  useEffect(() => {
+    if (user && !user?.is_guest) trackGoogleLoginCompletedFromPaywall();
+  }, [user]);
 
 
   useEffect(() => {
@@ -2516,20 +1845,12 @@ function App() {
     // alert(pathname) ;
   }, [pathname, hash]);
 
-  useEffect(() => {
-    const updateActiveStep = (event) => {
-      setActiveAppStep(Number(event.detail?.current) || 0);
-    };
-    window.addEventListener("cvmatch:active-step", updateActiveStep);
-    return () => window.removeEventListener("cvmatch:active-step", updateActiveStep);
-  }, []);
-
 
   return <div className="min-h-screen text-slate-950" style={{ background: COLORS.cream }}>
       {mode === "callback" && ( <AuthCallback  pathname={pathname}/>)}
       {mode !== "callback"  && ( <>
         { (!matchRoutes(routesDontNeedDefaultHeader, location) )?  
-        (!is404 && <Header onStart={startApp}  user={user} credits={credits} lockedResultActive={mode === "app" && activeAppStep === 3} onLockedResultCta={scrollToUnlockCta}   setMode={setMode} onHome={goHome}/>)
+        (!is404 && <Header onStart={startApp}  user={user} credits={credits} lockedResultActive={mode === "app" && activeAppStep === 3}   setMode={setMode} onHome={goHome}/>)
         :
         (!is404 && <HeaderX />)
         } 
@@ -2552,14 +1873,11 @@ function App() {
           {/* app principale (fallback logique mode) */}
           <Route  path="/" element={
             <AnimatePresence mode="wait">
-              <motion.div key={mode} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.25 }}>{mode === "landing" && ( <LandingPage onStart={startApp} setMode={setMode} /> )} {mode === "app" && (<CVMatchApp /> )} {mode === "dashboard" && (<Dashboard user={user} credits={credits} setMode={setMode} /> )} {mode === "viewanalyse" && (<ViewAnalyse />)}   </motion.div>
+              <motion.div key={mode} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.25 }}>{mode === "landing" && ( <LandingPage onStart={startApp} setMode={setMode} /> )} {mode === "app" && (<CVMatchApp setActiveAppStep={setActiveAppStep} /> )} {mode === "dashboard" && (<Dashboard user={user} credits={credits} setMode={setMode} /> )} {mode === "viewanalyse" && (<ViewAnalyse />)}  </motion.div>
             </AnimatePresence>
             }
           />
           <Route path="*" element={<NotFoundPage />} />
-
-
-         
         </Routes>
        
         
